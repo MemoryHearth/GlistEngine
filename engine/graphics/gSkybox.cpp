@@ -10,6 +10,7 @@
 #include "gTexture.h"
 #include "gFbo.h"
 #include "gTracy.h"
+#include "gUtils.h"
 // std::min and the scratch buffer the Vulkan face upload builds. Both were reaching
 // this file only through another header on one toolchain.
 #include <algorithm>
@@ -26,8 +27,6 @@ glm::mat4 captureViews[] = {
 	glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3( 0.0f,  0.0f, -1.0f), glm::vec3(0.0f, -1.0f,  0.0f))
 };
 
-static const float gSkyboxPi = 3.14159265358979323846f;
-
 static glm::vec3 gSkyboxFaceDirection(int face, float u, float v) {
 	const float x = u * 2.0f - 1.0f;
 	const float y = 1.0f - v * 2.0f;
@@ -43,8 +42,8 @@ static glm::vec3 gSkyboxFaceDirection(int face, float u, float v) {
 
 static glm::vec3 gSampleEquirectangular(const void* pixels, int width, int height,
 		int components, bool hdr, const glm::vec3& direction) {
-	const float u = std::atan2(direction.z, direction.x) / (2.0f * gSkyboxPi) + 0.5f;
-	const float v = std::asin(glm::clamp(direction.y, -1.0f, 1.0f)) / gSkyboxPi + 0.5f;
+	const float u = std::atan2(direction.z, direction.x) / (2.0f * PI) + 0.5f;
+	const float v = std::asin(glm::clamp(direction.y, -1.0f, 1.0f)) / PI + 0.5f;
 	const float sourcex = u * width - 0.5f;
 	const float sourcey = v * height - 0.5f;
 	const int x0 = static_cast<int>(std::floor(sourcex));
