@@ -28,7 +28,7 @@ layout(set = 3, binding = 0) uniform sampler2D normalmap;
 // The depth the scene was recorded at from the light's point of view. Like the
 // material maps this binding is always filled - with the 1x1 white texture when no
 // shadow map exists - and scene.shadowlightpos.w says whether to believe it.
-layout(set = 4, binding = 0) uniform sampler2D shadowmap;
+layout(set = 4, binding = 0) uniform sampler2DShadow shadowmap;
 
 struct Light {
     int type;
@@ -89,17 +89,21 @@ float calculateShadow(vec3 normal) {
     // depth quantisation makes it shadow itself in stripes.
     float bias = max(0.05 * (1.0 - dot(normal, lightDir)), 0.005);
 
-    vec2 texelSize = 1.0 / vec2(textureSize(shadowmap, 0));
-    float shadow = 0.0;
-    int radius = scene.softshadows != 0 ? 2 : 1;
-    for (int x = -radius; x <= radius; ++x) {
-        for (int y = -radius; y <= radius; ++y) {
-            float pcfDepth = texture(shadowmap, projCoords.xy + vec2(x, y) * texelSize).r;
-            shadow += currentDepth - bias > pcfDepth ? 1.0 : 0.0;
-        }
-    }
-    float taps = float((2 * radius + 1) * (2 * radius + 1));
-    return shadow / taps;
+	vec2 texelSize = 1.0 / vec2(textureSize(shadowmap, 0));
+	float reference = currentDepth - bias;
+	float lit = 0.0;
+	if (scene.softshadows != 0) {
+		for (int x = -1; x <= 1; ++x)
+			for (int y = -1; y <= 1; ++y)
+				lit += texture(shadowmap, vec3(projCoords.xy
+						+ vec2(x, y) * 1.5 * texelSize, reference));
+		return 1.0 - lit / 9.0;
+	}
+	for (int x = -1; x <= 1; x += 2)
+		for (int y = -1; y <= 1; y += 2)
+			lit += texture(shadowmap, vec3(projCoords.xy
+					+ vec2(x, y) * 0.75 * texelSize, reference));
+	return 1.0 - lit * 0.25;
 }
 
 // The material colours the lighting actually uses, picked once in main(). Passed
