@@ -274,6 +274,9 @@ struct gVKContext {
 	// reports the request; this reports the outcome.
 	bool isValidationActive() const { return validationactive; }
 	bool supportsMixedCommandRecording() const { return maintenance7enabled; }
+	bool supportsMultiDrawIndirect() const {
+		return multidrawindirectenabled && drawindirectfirstinstanceenabled;
+	}
 
 	// True once a logical device exists, i.e. init reached the point where the
 	// context is actually usable for swapchains, pipelines and queues.
@@ -598,6 +601,8 @@ private:
 	// VK_KHR_maintenance7 (core in Vulkan 1.4) permits inline commands and
 	// secondary command buffers in the same render-pass subpass.
 	bool maintenance7enabled = false;
+	bool multidrawindirectenabled = false;
+	bool drawindirectfirstinstanceenabled = false;
 
 	GLFWwindow* window = nullptr;
 	bool vsyncenabled = false;

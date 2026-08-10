@@ -158,7 +158,7 @@ bool gvkUploadMeshBuffer(gVKContext& ctx, gVKMeshBuffer& buf, const void* data,
 	}
 
 	if(buf.buffer == VK_NULL_HANDLE) {
-		VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+		VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
 				(isIndex ? VK_BUFFER_USAGE_INDEX_BUFFER_BIT : VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 		if(!gvkCreateBuffer(ctx, size, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 				buf.buffer, buf.memory)) {

@@ -1767,9 +1767,16 @@ bool gVKRenderEngine::initVulkan() {
 	// Same rule as the instance side: developer requests extend the mandatory set.
 	deviceextensions.insert(deviceextensions.end(), ctx->extradeviceextensions.begin(), ctx->extradeviceextensions.end());
 
-	// Empty: no optional features are switched on yet. Kept separate from the
-	// context's devicefeatures, which records what the GPU actually supports.
+	// Indirect batches use firstInstance to select the matching model matrix from
+	// the instance stream. Both capabilities are optional and retain the worker
+	// draw fallback when a driver does not expose them.
+	VkPhysicalDeviceFeatures supportedfeatures{};
+	vkGetPhysicalDeviceFeatures(ctx->physicaldevice, &supportedfeatures);
 	VkPhysicalDeviceFeatures enabledfeatures{};
+	enabledfeatures.multiDrawIndirect = supportedfeatures.multiDrawIndirect;
+	enabledfeatures.drawIndirectFirstInstance = supportedfeatures.drawIndirectFirstInstance;
+	ctx->multidrawindirectenabled = enabledfeatures.multiDrawIndirect == VK_TRUE;
+	ctx->drawindirectfirstinstanceenabled = enabledfeatures.drawIndirectFirstInstance == VK_TRUE;
 	VkPhysicalDeviceMaintenance7FeaturesKHR enabledmaintenance7{};
 	enabledmaintenance7.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_7_FEATURES_KHR;
 	enabledmaintenance7.maintenance7 = ctx->maintenance7enabled ? VK_TRUE : VK_FALSE;
