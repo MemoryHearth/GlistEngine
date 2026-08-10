@@ -273,6 +273,7 @@ struct gVKContext {
 	// layer or debug-utils extension is missing at runtime. getValidationEnabled()
 	// reports the request; this reports the outcome.
 	bool isValidationActive() const { return validationactive; }
+	bool supportsMixedCommandRecording() const { return maintenance7enabled; }
 
 	// True once a logical device exists, i.e. init reached the point where the
 	// context is actually usable for swapchains, pipelines and queues.
@@ -581,6 +582,9 @@ private:
 	std::vector<VkPresentModeKHR> surfacepresentmodes;
 	uint32_t instanceapiversion = 0;
 	bool validationactive = false;
+	// VK_KHR_maintenance7 (core in Vulkan 1.4) permits inline commands and
+	// secondary command buffers in the same render-pass subpass.
+	bool maintenance7enabled = false;
 
 	GLFWwindow* window = nullptr;
 	bool vsyncenabled = false;

@@ -1745,12 +1745,34 @@ bool gVKRenderEngine::initVulkan() {
 			}
 		}
 	}
+	bool hasmaintenance7extension = false;
+	for(const auto& ext : ctx->availabledeviceextensions) {
+		if(strcmp(ext.extensionName, VK_KHR_MAINTENANCE_7_EXTENSION_NAME) == 0) {
+			hasmaintenance7extension = true;
+			break;
+		}
+	}
+	VkPhysicalDeviceMaintenance7FeaturesKHR maintenance7support{};
+	maintenance7support.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_7_FEATURES_KHR;
+	VkPhysicalDeviceFeatures2 queriedfeatures{};
+	queriedfeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	queriedfeatures.pNext = &maintenance7support;
+	vkGetPhysicalDeviceFeatures2(ctx->physicaldevice, &queriedfeatures);
+	ctx->maintenance7enabled = maintenance7support.maintenance7 == VK_TRUE
+			&& hasmaintenance7extension;
+	// Some 1.4 portability implementations expose the promoted feature but still
+	// require the extension name for the KHR mixed-subpass enum to be accepted.
+	if(ctx->maintenance7enabled && hasmaintenance7extension)
+		deviceextensions.push_back(VK_KHR_MAINTENANCE_7_EXTENSION_NAME);
 	// Same rule as the instance side: developer requests extend the mandatory set.
 	deviceextensions.insert(deviceextensions.end(), ctx->extradeviceextensions.begin(), ctx->extradeviceextensions.end());
 
 	// Empty: no optional features are switched on yet. Kept separate from the
 	// context's devicefeatures, which records what the GPU actually supports.
 	VkPhysicalDeviceFeatures enabledfeatures{};
+	VkPhysicalDeviceMaintenance7FeaturesKHR enabledmaintenance7{};
+	enabledmaintenance7.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_7_FEATURES_KHR;
+	enabledmaintenance7.maintenance7 = ctx->maintenance7enabled ? VK_TRUE : VK_FALSE;
 	VkDeviceCreateInfo deviceinfo{};
 	deviceinfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 	deviceinfo.queueCreateInfoCount = static_cast<uint32_t>(queueinfos.size());
@@ -1758,6 +1780,7 @@ bool gVKRenderEngine::initVulkan() {
 	deviceinfo.pEnabledFeatures = &enabledfeatures;
 	deviceinfo.enabledExtensionCount = static_cast<uint32_t>(deviceextensions.size());
 	deviceinfo.ppEnabledExtensionNames = deviceextensions.data();
+	deviceinfo.pNext = ctx->maintenance7enabled ? &enabledmaintenance7 : nullptr;
 	// Device-level layers were deprecated in Vulkan 1.0: the layers enabled on the
 	// instance already cover the device, and passing them again here is a spec
 	// violation the validation layer reports. The spec requires these to be zero.

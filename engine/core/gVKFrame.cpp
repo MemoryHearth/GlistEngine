@@ -123,7 +123,10 @@ bool gvkEnsureRenderPass(gVKContext& ctx) {
 	clearvalues[1].depthStencil = {1.0f, 0};
 	renderpassinfo.clearValueCount = 2;
 	renderpassinfo.pClearValues = clearvalues;
-	vkCmdBeginRenderPass(commandbuffer, &renderpassinfo, VK_SUBPASS_CONTENTS_INLINE);
+	const VkSubpassContents contents = ctx.maintenance7enabled
+			? VK_SUBPASS_CONTENTS_INLINE_AND_SECONDARY_COMMAND_BUFFERS_KHR
+			: VK_SUBPASS_CONTENTS_INLINE;
+	vkCmdBeginRenderPass(commandbuffer, &renderpassinfo, contents);
 	ctx.resetRecordedDrawState();
 
 	// A negative-height viewport flips Y, so the orthographic projection the engine
