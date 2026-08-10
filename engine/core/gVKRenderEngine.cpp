@@ -36,6 +36,7 @@
 	#include "gVKMeshBuffer.h"
 	#include "gVKUniform.h"
 	#include "gVKShadow.h"
+	#include "gVKBuffer.h"
 
 	// Defined further down; declared here because drawMesh3D reaches it first. Kept
 	// out of the class because it returns a Vulkan handle and gVKRenderEngine.h is
@@ -111,6 +112,23 @@ private:
 	size_t remaining = 0;
 	uint64_t generation = 0;
 	bool stopping = false;
+};
+
+struct gVKGeometryAtlas {
+	VkBuffer vertices = VK_NULL_HANDLE;
+	VkDeviceMemory vertexmemory = VK_NULL_HANDLE;
+	VkBuffer indices = VK_NULL_HANDLE;
+	VkDeviceMemory indexmemory = VK_NULL_HANDLE;
+	std::unordered_map<VkBuffer, VkDeviceSize> vertexoffsets;
+	std::unordered_map<VkBuffer, VkDeviceSize> indexoffsets;
+	VkBuffer indirect[GVK_MAX_FRAMES_IN_FLIGHT]{};
+	VkDeviceMemory indirectmemory[GVK_MAX_FRAMES_IN_FLIGHT]{};
+	void* indirectmapped[GVK_MAX_FRAMES_IN_FLIGHT]{};
+	VkBuffer models[GVK_MAX_FRAMES_IN_FLIGHT]{};
+	VkDeviceMemory modelmemory[GVK_MAX_FRAMES_IN_FLIGHT]{};
+	void* modelmapped[GVK_MAX_FRAMES_IN_FLIGHT]{};
+	size_t drawcapacity = 0;
+	bool valid = false;
 };
 #endif
 
@@ -1916,6 +1934,20 @@ void gVKRenderEngine::cleanupVulkan() {
 	// Destroying objects the GPU is still using is a validation error, so the
 	// device is drained first.
 	if(ctx->device != VK_NULL_HANDLE) vkDeviceWaitIdle(ctx->device);
+	if(geometryatlas != nullptr) {
+		if(geometryatlas->vertices != VK_NULL_HANDLE) vkDestroyBuffer(ctx->device, geometryatlas->vertices, nullptr);
+		if(geometryatlas->vertexmemory != VK_NULL_HANDLE) vkFreeMemory(ctx->device, geometryatlas->vertexmemory, nullptr);
+		if(geometryatlas->indices != VK_NULL_HANDLE) vkDestroyBuffer(ctx->device, geometryatlas->indices, nullptr);
+		if(geometryatlas->indexmemory != VK_NULL_HANDLE) vkFreeMemory(ctx->device, geometryatlas->indexmemory, nullptr);
+		for(int frame = 0; frame < GVK_MAX_FRAMES_IN_FLIGHT; ++frame) {
+			if(geometryatlas->indirect[frame] != VK_NULL_HANDLE) vkDestroyBuffer(ctx->device, geometryatlas->indirect[frame], nullptr);
+			if(geometryatlas->indirectmemory[frame] != VK_NULL_HANDLE) vkFreeMemory(ctx->device, geometryatlas->indirectmemory[frame], nullptr);
+			if(geometryatlas->models[frame] != VK_NULL_HANDLE) vkDestroyBuffer(ctx->device, geometryatlas->models[frame], nullptr);
+			if(geometryatlas->modelmemory[frame] != VK_NULL_HANDLE) vkFreeMemory(ctx->device, geometryatlas->modelmemory[frame], nullptr);
+		}
+	}
+	delete geometryatlas;
+	geometryatlas = nullptr;
 	// Strict reverse creation order: Vulkan requires children to be destroyed
 	// before their parent, and the surface must die before its instance. The 2D
 	// draw path was built last, so it is torn down first (pipelines reference the
@@ -2054,6 +2086,122 @@ void gVKRenderEngine::flushQueuedDraws() {
 	queuedmeshdraws.clear();
 }
 
+bool gVKRenderEngine::buildQueuedGeometryAtlas() {
+#ifdef GVK_DESKTOP_GLFW
+	if(geometryatlas != nullptr) return geometryatlas->valid;
+	if(vkcontext == nullptr || queuedmeshdraws.empty()) return false;
+	struct Source { VkBuffer buffer; VkDeviceSize size; VkDeviceSize offset; };
+	std::vector<Source> vertexsources;
+	std::vector<Source> indexsources;
+	std::unordered_map<VkBuffer, size_t> seenvertices;
+	std::unordered_map<VkBuffer, size_t> seenindices;
+	VkDeviceSize vertexbytes = 0;
+	VkDeviceSize indexbytes = 0;
+	auto alignUp = [](VkDeviceSize value, VkDeviceSize alignment) {
+		return (value + alignment - 1) & ~(alignment - 1);
+	};
+	for(const QueuedMeshDraw& draw : queuedmeshdraws) {
+		auto arrayit = vkvertexarrays.find(draw.vertexarrayid);
+		if(arrayit == vkvertexarrays.end()) return false;
+		gVKMeshBuffer* vertex = getMeshBuffer(arrayit->second.vertexbuffer);
+		gVKMeshBuffer* index = getMeshBuffer(arrayit->second.indexbuffer);
+		if(vertex == nullptr || vertex->isdynamic || (index != nullptr && index->isdynamic)) return false;
+		if(vertex->buffer != VK_NULL_HANDLE && seenvertices.emplace(vertex->buffer, vertexsources.size()).second) {
+			vertexbytes = alignUp(vertexbytes, sizeof(gVertex));
+			vertexsources.push_back({vertex->buffer, vertex->size, vertexbytes});
+			vertexbytes += vertex->size;
+		}
+		if(index != nullptr && index->buffer != VK_NULL_HANDLE
+				&& seenindices.emplace(index->buffer, indexsources.size()).second) {
+			indexbytes = alignUp(indexbytes, sizeof(gIndex));
+			indexsources.push_back({index->buffer, index->size, indexbytes});
+			indexbytes += index->size;
+		}
+	}
+	if(vertexbytes == 0) return false;
+	gVKGeometryAtlas* atlas = new gVKGeometryAtlas();
+	if(!gvkCreateBuffer(*vkcontext, vertexbytes,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, atlas->vertices, atlas->vertexmemory)) {
+		delete atlas;
+		return false;
+	}
+	if(indexbytes > 0 && !gvkCreateBuffer(*vkcontext, indexbytes,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, atlas->indices, atlas->indexmemory)) {
+		vkDestroyBuffer(vkcontext->device, atlas->vertices, nullptr);
+		vkFreeMemory(vkcontext->device, atlas->vertexmemory, nullptr);
+		delete atlas;
+		return false;
+	}
+	atlas->drawcapacity = queuedmeshdraws.size();
+	const VkDeviceSize indirectbytes = atlas->drawcapacity * sizeof(VkDrawIndexedIndirectCommand);
+	const VkDeviceSize modelbytes = atlas->drawcapacity * sizeof(glm::mat4);
+	for(int frame = 0; frame < GVK_MAX_FRAMES_IN_FLIGHT; ++frame) {
+		if(!gvkCreateBuffer(*vkcontext, indirectbytes, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				atlas->indirect[frame], atlas->indirectmemory[frame])
+				|| !gvkCreateBuffer(*vkcontext, modelbytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				atlas->models[frame], atlas->modelmemory[frame])
+				|| vkMapMemory(vkcontext->device, atlas->indirectmemory[frame], 0,
+						indirectbytes, 0, &atlas->indirectmapped[frame]) != VK_SUCCESS
+				|| vkMapMemory(vkcontext->device, atlas->modelmemory[frame], 0,
+						modelbytes, 0, &atlas->modelmapped[frame]) != VK_SUCCESS) {
+			geometryatlas = atlas;
+			return false;
+		}
+	}
+	VkCommandPool pool = VK_NULL_HANDLE;
+	VkCommandPoolCreateInfo poolinfo{};
+	poolinfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	poolinfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+	poolinfo.queueFamilyIndex = *vkcontext->getGraphicsFamily();
+	if(vkCreateCommandPool(vkcontext->device, &poolinfo, nullptr, &pool) != VK_SUCCESS) return false;
+	VkCommandBuffer cmd = VK_NULL_HANDLE;
+	VkCommandBufferAllocateInfo alloc{};
+	alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	alloc.commandPool = pool;
+	alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	alloc.commandBufferCount = 1;
+	if(vkAllocateCommandBuffers(vkcontext->device, &alloc, &cmd) != VK_SUCCESS) {
+		vkDestroyCommandPool(vkcontext->device, pool, nullptr);
+		return false;
+	}
+	VkCommandBufferBeginInfo begin{};
+	begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	vkBeginCommandBuffer(cmd, &begin);
+	for(const Source& source : vertexsources) {
+		VkBufferCopy copy{0, source.offset, source.size};
+		vkCmdCopyBuffer(cmd, source.buffer, atlas->vertices, 1, &copy);
+		atlas->vertexoffsets[source.buffer] = source.offset;
+	}
+	for(const Source& source : indexsources) {
+		VkBufferCopy copy{0, source.offset, source.size};
+		vkCmdCopyBuffer(cmd, source.buffer, atlas->indices, 1, &copy);
+		atlas->indexoffsets[source.buffer] = source.offset;
+	}
+	vkEndCommandBuffer(cmd);
+	VkSubmitInfo submit{};
+	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submit.commandBufferCount = 1;
+	submit.pCommandBuffers = &cmd;
+	const VkResult submitted = vkQueueSubmit(*vkcontext->getGraphicsQueue(), 1, &submit, VK_NULL_HANDLE);
+	if(submitted == VK_SUCCESS) vkQueueWaitIdle(*vkcontext->getGraphicsQueue());
+	vkDestroyCommandPool(vkcontext->device, pool, nullptr);
+	if(submitted != VK_SUCCESS) return false;
+	geometryatlas = atlas;
+	atlas->valid = true;
+	gLogi("gVKRenderEngine") << "Static geometry atlas: " << vertexsources.size()
+			<< " vertex buffers / " << vertexbytes << " bytes, " << indexsources.size()
+			<< " index buffers / " << indexbytes << " bytes.";
+	return true;
+#else
+	return false;
+#endif
+}
+
 bool gVKRenderEngine::recordQueuedOpaqueDrawsParallel() {
 #ifdef GVK_DESKTOP_GLFW
 	if(vkcontext == nullptr || !vkcontext->supportsMixedCommandRecording()
@@ -2063,11 +2211,13 @@ bool gVKRenderEngine::recordQueuedOpaqueDrawsParallel() {
 	const VkDescriptorSet whiteset = vktextures[whitetextureid]->descriptorset;
 	const VkDescriptorSet sceneset = vkcontext->getCurrentSceneDescriptorSet();
 	if(whiteset == VK_NULL_HANDLE || sceneset == VK_NULL_HANDLE) return false;
+	const bool useatlas = vkcontext->supportsMultiDrawIndirect() && buildQueuedGeometryAtlas();
 
 	struct OpaquePacket {
 		VkBuffer vertex = VK_NULL_HANDLE;
 		VkDeviceSize vertexoffset = 0;
 		VkBuffer index = VK_NULL_HANDLE;
+		VkDeviceSize indexoffset = 0;
 		VkBuffer instances = VK_NULL_HANDLE;
 		VkDeviceSize instanceoffset = 0;
 		uint32_t count = 0;
@@ -2098,6 +2248,18 @@ bool gVKRenderEngine::recordQueuedOpaqueDrawsParallel() {
 		const int count = packet.index != VK_NULL_HANDLE && draw.indexcount > 0
 				? draw.indexcount : draw.vertexcount;
 		if(packet.vertex == VK_NULL_HANDLE || count <= 0) return false;
+		if(useatlas) {
+			auto vertexatlas = geometryatlas->vertexoffsets.find(packet.vertex);
+			if(vertexatlas == geometryatlas->vertexoffsets.end()) return false;
+			packet.vertex = geometryatlas->vertices;
+			packet.vertexoffset += vertexatlas->second;
+			if(packet.index != VK_NULL_HANDLE) {
+				auto indexatlas = geometryatlas->indexoffsets.find(packet.index);
+				if(indexatlas == geometryatlas->indexoffsets.end()) return false;
+				packet.index = geometryatlas->indices;
+				packet.indexoffset = indexatlas->second;
+			}
+		}
 		packet.count = static_cast<uint32_t>(count);
 		packet.instances = identityinstancebuffer->buffer;
 		packet.sets[0] = sceneset;
@@ -2137,7 +2299,30 @@ bool gVKRenderEngine::recordQueuedOpaqueDrawsParallel() {
 				? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
 		packets.push_back(packet);
 	}
-	if(packets.empty() || !gvkEnsureRenderPass(*vkcontext)) return false;
+	if(packets.empty()) return false;
+	const uint32_t frameslot = vkcontext->getCurrentFrame();
+	if(useatlas) {
+		if(packets.size() > geometryatlas->drawcapacity) return false;
+		auto* commands = static_cast<VkDrawIndexedIndirectCommand*>(
+				geometryatlas->indirectmapped[frameslot]);
+		auto* models = static_cast<glm::mat4*>(geometryatlas->modelmapped[frameslot]);
+		for(size_t i = 0; i < packets.size(); ++i) {
+			OpaquePacket& packet = packets[i];
+			if(packet.index == VK_NULL_HANDLE || packet.vertexoffset % sizeof(gVertex) != 0
+					|| packet.indexoffset % sizeof(gIndex) != 0) return false;
+			models[i] = packet.push.model;
+			commands[i] = {packet.count, 1,
+					static_cast<uint32_t>(packet.indexoffset / sizeof(gIndex)),
+					static_cast<int32_t>(packet.vertexoffset / sizeof(gVertex)),
+					static_cast<uint32_t>(i)};
+			packet.vertexoffset = 0;
+			packet.indexoffset = 0;
+			packet.instances = geometryatlas->models[frameslot];
+			packet.push.model = glm::mat4(1.0f);
+			packet.push.misc.y += 2.0f;
+		}
+	}
+	if(!gvkEnsureRenderPass(*vkcontext)) return false;
 	vkcontext->resetCurrentOpaqueWorkerPools();
 	const size_t workercount = std::min(available.size(), packets.size());
 	std::vector<VkCommandBuffer> recorded(workercount, VK_NULL_HANDLE);
@@ -2163,6 +2348,14 @@ bool gVKRenderEngine::recordQueuedOpaqueDrawsParallel() {
 		vkCmdSetViewport(cmd, 0, 1, &viewport);
 		vkCmdSetScissor(cmd, 0, 1, &scissor);
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkcontext->getMesh3DPipeline(false));
+		auto samebatch = [](const OpaquePacket& a, const OpaquePacket& b) {
+			return a.depthtest == b.depthtest && a.depthcompare == b.depthcompare
+					&& a.cullmode == b.cullmode && a.frontface == b.frontface
+					&& std::memcmp(a.sets, b.sets, sizeof(a.sets)) == 0
+					&& std::memcmp(&a.push.ambient, &b.push.ambient,
+							sizeof(a.push.ambient) + sizeof(a.push.diffuse)
+							+ sizeof(a.push.specular) + sizeof(a.push.misc)) == 0;
+		};
 		for(size_t i = first; i < last; ++i) {
 			const OpaquePacket& packet = packets[i];
 			vkCmdSetDepthTestEnable(cmd, packet.depthtest);
@@ -2180,8 +2373,17 @@ bool gVKRenderEngine::recordQueuedOpaqueDrawsParallel() {
 					vkcontext->getMesh3DPushSize());
 			vkCmdPushConstants(cmd, vkcontext->getMesh3DPipelineLayout(),
 					vkcontext->getMesh3DPushStages(), 0, pushsize, &packet.push);
-			if(packet.index != VK_NULL_HANDLE) {
+			if(useatlas) {
+				size_t groupend = i + 1;
+				while(groupend < last && samebatch(packet, packets[groupend])) ++groupend;
 				vkCmdBindIndexBuffer(cmd, packet.index, 0,
+						sizeof(gIndex) == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+				vkCmdDrawIndexedIndirect(cmd, geometryatlas->indirect[frameslot],
+						i * sizeof(VkDrawIndexedIndirectCommand),
+						static_cast<uint32_t>(groupend - i), sizeof(VkDrawIndexedIndirectCommand));
+				i = groupend - 1;
+			} else if(packet.index != VK_NULL_HANDLE) {
+				vkCmdBindIndexBuffer(cmd, packet.index, packet.indexoffset,
 						sizeof(gIndex) == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
 				vkCmdDrawIndexed(cmd, packet.count, 1, 0, 0, 0);
 			} else vkCmdDraw(cmd, packet.count, 1, 0, 0);
