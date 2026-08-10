@@ -56,7 +56,7 @@ layout(set = 1, binding = 4) uniform sampler2D aoMap;
 // five texture ids. Three sets in total still fits the four Vulkan guarantees. Like
 // the maps above this binding is always filled - with the 1x1 white texture when no
 // shadow map exists - and scene.shadowlightpos.w says whether to believe it.
-layout(set = 2, binding = 0) uniform sampler2DShadow shadowmap;
+layout(set = 2, binding = 0) uniform sampler2D shadowmap;
 
 layout(push_constant) uniform Push {
     mat4 model;
@@ -132,21 +132,17 @@ float calculateShadow(vec3 normal) {
     vec3 lightDir = normalize(scene.shadowlightpos.xyz - vWorldPos);
     float bias = max(0.05 * (1.0 - dot(normal, lightDir)), 0.005);
 
-	vec2 texelSize = 1.0 / vec2(textureSize(shadowmap, 0));
-	float reference = currentDepth - bias;
-	float lit = 0.0;
-	if (scene.softshadows != 0) {
-		for (int x = -1; x <= 1; ++x)
-			for (int y = -1; y <= 1; ++y)
-				lit += texture(shadowmap, vec3(projCoords.xy
-						+ vec2(x, y) * 1.5 * texelSize, reference));
-		return 1.0 - lit / 9.0;
-	}
-	for (int x = -1; x <= 1; x += 2)
-		for (int y = -1; y <= 1; y += 2)
-			lit += texture(shadowmap, vec3(projCoords.xy
-					+ vec2(x, y) * 0.75 * texelSize, reference));
-	return 1.0 - lit * 0.25;
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowmap, 0));
+    float shadow = 0.0;
+    int radius = scene.softshadows != 0 ? 2 : 1;
+    for (int x = -radius; x <= radius; ++x) {
+        for (int y = -radius; y <= radius; ++y) {
+            float pcfDepth = texture(shadowmap, projCoords.xy + vec2(x, y) * texelSize).r;
+            shadow += currentDepth - bias > pcfDepth ? 1.0 : 0.0;
+        }
+    }
+    float taps = float((2 * radius + 1) * (2 * radius + 1));
+    return shadow / taps;
 }
 
 void main() {

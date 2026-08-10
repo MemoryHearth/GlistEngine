@@ -162,19 +162,11 @@ bool gvkCreateShadowResources(gVKContext& ctx, uint32_t width, uint32_t height) 
 
 	VkSamplerCreateInfo samplerinfo{};
 	samplerinfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	VkFormatProperties shadowproperties{};
-	vkGetPhysicalDeviceFormatProperties(*ctx.getPhysicalDevice(), ctx.shadowformat, &shadowproperties);
-	const bool linearcompare = (shadowproperties.optimalTilingFeatures
-			& VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
-	// A comparison sampler lets fixed-function texture filtering combine depth
-	// comparisons. The shader then needs 4/9 samples instead of 9/25 manual loads.
-	// Linear filtering is feature-queried; nearest comparison remains the portable
-	// fallback for depth formats that cannot be linearly filtered.
-	samplerinfo.magFilter = linearcompare ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
-	samplerinfo.minFilter = linearcompare ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+	// Nearest, and the shader does its own PCF - the same arrangement as the OpenGL
+	// path, which takes several taps by hand rather than leaning on the sampler.
+	samplerinfo.magFilter = VK_FILTER_NEAREST;
+	samplerinfo.minFilter = VK_FILTER_NEAREST;
 	samplerinfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-	samplerinfo.compareEnable = VK_TRUE;
-	samplerinfo.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 	// Clamped to a white border so anything outside the light's frustum reads as
 	// "furthest away", i.e. lit. Repeating there would wrap the shadow of one edge
 	// of the scene onto the other.
@@ -252,8 +244,7 @@ bool gvkCreateShadowResources(gVKContext& ctx, uint32_t width, uint32_t height) 
 	}
 
 	gLogi("gVKShadow") << "Shadow map created: " << width << "x" << height
-			<< ", format " << ctx.shadowformat
-			<< ", comparison filter " << (linearcompare ? "linear" : "nearest");
+			<< ", format " << ctx.shadowformat;
 	return true;
 }
 
