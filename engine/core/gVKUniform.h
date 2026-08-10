@@ -96,7 +96,7 @@ struct gVKMeshPush {
 	glm::vec4 ambient;
 	glm::vec4 diffuse;
 	glm::vec4 specular;
-	// x is shininess; the rest keeps the block vec4 aligned.
+	// x shininess; y packs diffuse-map and instancing flags; z specular; w normal.
 	glm::vec4 misc;
 };
 
@@ -107,8 +107,8 @@ struct gVKMeshPush {
  */
 struct gVKPbrPush {
 	glm::mat4 model;
-	// maps0 = albedo, normal, metallic, roughness; maps1.x = ao. Non-zero means the
-	// material supplies that map.
+	// maps0 = albedo, normal, metallic, roughness; maps1.x = ao and maps1.y marks an
+	// instanced draw. Non-zero map fields mean the material supplies that map.
 	glm::ivec4 maps0;
 	glm::ivec4 maps1;
 };
@@ -120,8 +120,7 @@ struct gVKPbrPush {
  */
 struct gVKShadowPush {
 	glm::mat4 lightmodel;
-	// x is non-zero when the caster has a cutout diffuse map; the rest keeps the
-	// block vec4 aligned.
+	// x is non-zero for a cutout diffuse map; y marks an instanced draw.
 	glm::vec4 misc;
 };
 

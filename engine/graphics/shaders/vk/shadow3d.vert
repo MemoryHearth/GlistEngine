@@ -18,8 +18,11 @@ layout(push_constant) uniform Push {
     // separate would cost 192 bytes of a 128 byte budget; the instance matrix below
     // is the only part that cannot be folded in, since it differs per instance.
     mat4 lightmodel;
+    // x cutout-map flag (fragment stage), y instancing flag.
+    vec4 misc;
 } pc;
 
 void main() {
-    gl_Position = pc.lightmodel * aInstanceModel * vec4(aPos, 1.0);
+    mat4 lightmodel = pc.misc.y > 0.0 ? pc.lightmodel * aInstanceModel : pc.lightmodel;
+    gl_Position = lightmodel * vec4(aPos, 1.0);
 }

@@ -251,7 +251,8 @@ void main() {
     // what reaches the lighting below is the surface colour times renderColor.
     vec4 matAmbient;
     vec4 matDiffuse;
-    if (pc.misc.y > 0.0) {
+    // The integer part above one is the vertex shader's instancing flag.
+    if (mod(pc.misc.y, 2.0) > 0.0) {
         vec4 sampled = texture(diffusemap, vTexCoords);
         matAmbient = sampled * pc.ambient;
         matDiffuse = sampled * pc.diffuse;

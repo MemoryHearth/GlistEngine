@@ -2292,6 +2292,7 @@ void gVKRenderEngine::drawMesh3D(GLuint vertexArrayId, int vertexCount, int inde
 		// The light's matrix is folded into the model matrix on the CPU; see
 		// shadow3d.vert for why the three are not sent separately.
 		shadowpush.lightmodel = shadowlightmatrix * model;
+		shadowpush.misc.y = instanceCount > 1 ? 1.0f : 0.0f;
 
 		const VkIndexType shadowindextype = sizeof(gIndex) == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
 		gvkDrawShadowCaster(*vkcontext, vertexbuffer, vertexoffset,
@@ -2340,7 +2341,8 @@ void gVKRenderEngine::drawMesh3D(GLuint vertexArrayId, int vertexCount, int inde
 		pbrpush.model = model;
 		pbrpush.maps0 = glm::ivec4(surface.albedomapid != 0 ? 1 : 0, surface.pbrnormalmapid != 0 ? 1 : 0,
 				surface.metallicmapid != 0 ? 1 : 0, surface.roughnessmapid != 0 ? 1 : 0);
-		pbrpush.maps1 = glm::ivec4(surface.aomapid != 0 ? 1 : 0, 0, 0, 0);
+		pbrpush.maps1 = glm::ivec4(surface.aomapid != 0 ? 1 : 0,
+				instanceCount > 1 ? 1 : 0, 0, 0);
 
 		VkBuffer pbrinstances = VK_NULL_HANDLE;
 		VkDeviceSize pbrinstancesoffset = 0;
@@ -2389,8 +2391,11 @@ void gVKRenderEngine::drawMesh3D(GLuint vertexArrayId, int vertexCount, int inde
 		if(it != vktextures.end() && it->second != nullptr) normalset = it->second->descriptorset;
 	}
 
+	// misc.y packs two boolean flags: bit 0 says a diffuse map is present and bit
+	// 1 says this is an instanced draw. Both shaders can then skip work without
+	// growing the already-full 128-byte push block.
 	push.misc = glm::vec4(surface.shininess,
-			diffuseset != VK_NULL_HANDLE ? 1.0f : 0.0f,
+			(diffuseset != VK_NULL_HANDLE ? 1.0f : 0.0f) + (instanceCount > 1 ? 2.0f : 0.0f),
 			specularset != VK_NULL_HANDLE ? 1.0f : 0.0f,
 			normalset != VK_NULL_HANDLE ? 1.0f : 0.0f);
 

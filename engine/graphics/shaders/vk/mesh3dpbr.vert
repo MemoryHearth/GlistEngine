@@ -58,7 +58,9 @@ layout(location = 2) out vec3 vNormal;
 layout(location = 3) out vec4 vFragPosLightSpace;
 
 void main() {
-    mat4 model = pc.model * aInstanceModel;
+    // maps1.y is reserved for this draw-level flag and is ignored by the fragment
+    // shader. Avoiding the identity multiplication matters for very dense meshes.
+    mat4 model = pc.maps1.y != 0 ? pc.model * aInstanceModel : pc.model;
 
     vec4 world = model * vec4(aPos, 1.0);
     vWorldPos = world.xyz;

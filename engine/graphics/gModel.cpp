@@ -80,8 +80,51 @@ void gModel::load(const std::string& fullPath) {
 	loadModelFile(fullPath);
 }
 
+void gModel::loadStaticBatched(const std::string& fullPath) {
+	loadStaticBatchedFile(fullPath);
+}
+
+void gModel::loadStaticBatchedFile(const std::string& fullPath) {
+	const unsigned int flags = aiProcess_Triangulate | aiProcess_FlipUVs
+			| aiProcess_CalcTangentSpace | aiProcessPreset_TargetRealtime_Fast
+			| aiProcess_PreTransformVertices | aiProcess_OptimizeMeshes
+			| aiProcess_OptimizeGraph;
+#ifdef LINUX
+	std::shared_ptr<aiPropertyStore> store;
+	store.reset(aiCreatePropertyStore(), aiReleasePropertyStore);
+	aiSetImportPropertyInteger(store.get(), AI_CONFIG_PP_SBP_REMOVE,
+			aiPrimitiveType_LINE | aiPrimitiveType_POINT);
+	aiSetImportPropertyInteger(store.get(), AI_CONFIG_PP_PTV_NORMALIZE, true);
+	scene = aiImportFileExWithProperties(fullPath.c_str(), flags, nullptr, store.get());
+#else
+	Assimp::Importer importer;
+	importer.SetPropertyInteger(AI_CONFIG_PP_SBP_REMOVE,
+			aiPrimitiveType_LINE | aiPrimitiveType_POINT);
+	importer.SetPropertyBool(AI_CONFIG_PP_PTV_NORMALIZE, true);
+	importer.ReadFile(fullPath, flags);
+	scene = importer.GetOrphanedScene();
+#endif
+	if(!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode) {
+		gLoge("gModel") << "Could not load static batched model: " << fullPath;
+		return;
+	}
+
+	directory = fullPath.substr(0, fullPath.find_last_of('/'));
+	filename = fullPath.substr(fullPath.find_last_of('/') + 1);
+	animationnum = 0;
+	isanimated = false;
+	staticmeshgroups.clear();
+	processNode(scene->mRootNode, scene);
+	recalculateBoundingBox();
+	initialboundingbox = boundingbox;
+}
+
 void gModel::loadModel(const std::string& modelPath) {
 	loadModelFile(gGetModelsDir() + modelPath);
+}
+
+void gModel::loadModelStaticBatched(const std::string& modelPath) {
+	loadStaticBatchedFile(gGetModelsDir() + modelPath);
 }
 
 void gModel::loadModelFile(const std::string& fullPath) {

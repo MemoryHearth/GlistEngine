@@ -22,10 +22,9 @@ layout(location = 5) in vec3 aColor;
 // input rate is INSTANCE, which is Vulkan's equivalent of glVertexAttribDivisor(1).
 // A mat4 occupies four consecutive locations, so this claims 6 through 9.
 //
-// There is no "is this instanced" flag, unlike color_vert.glsl's useInstancing. A
-// draw that is not instanced binds a one-element buffer holding the identity
-// matrix, so the multiply below leaves the model matrix untouched and one code path
-// covers both cases.
+// pc.misc.y carries the instancing bit as well as the diffuse-map bit. Keeping the
+// attribute in the common layout lets both draw forms share a pipeline, while the
+// uniform branch avoids a mat4*mat4 for every vertex of an ordinary mesh.
 layout(location = 6) in mat4 aInstanceModel;
 
 // Everything that is the same for every mesh in a frame. Matches gVKSceneUniforms
@@ -67,7 +66,7 @@ layout(push_constant) uniform Push {
     vec4 ambient;
     vec4 diffuse;
     vec4 specular;
-    // x is shininess; the rest is padding kept so the block stays vec4 aligned.
+    // x shininess; y diffuse-map bit + 2*instancing; z specular map; w normal map.
     vec4 misc;
 } pc;
 
@@ -76,10 +75,8 @@ layout(location = 1) out vec3 vFragPos;
 layout(location = 2) out vec3 vColor;
 layout(location = 3) out vec2 vTexCoords;
 // Tangent space, for normal mapping. A mat3 takes three locations, so these run
-// 4..6 and the two vectors follow. Always computed, even when no normal map is
-// bound: color_vert.glsl guards it with the useNormalMap flag, but the fragment
-// stage ignores these unless that flag is set, so the result is the same and the
-// vertex stage stays branchless.
+// 4..6 and the two vectors follow. They are only computed when a normal map is
+// present, matching the OpenGL path and avoiding substantial work on dense maps.
 layout(location = 4) out mat3 vTBN;
 layout(location = 7) out vec3 vTangentViewPos;
 layout(location = 8) out vec3 vTangentFragPos;
@@ -89,8 +86,8 @@ layout(location = 8) out vec3 vTangentFragPos;
 layout(location = 9) out vec4 vFragPosLightSpace;
 
 void main() {
-    // Matches color_vert.glsl's "model * instanceModel" ordering.
-    mat4 model = pc.model * aInstanceModel;
+    bool instanced = pc.misc.y >= 2.0;
+    mat4 model = instanced ? pc.model * aInstanceModel : pc.model;
 
     vec4 world = model * vec4(aPos, 1.0);
     // The projection already carries the Vulkan depth correction; see
@@ -107,17 +104,17 @@ void main() {
     vColor = aColor;
     vTexCoords = aTexCoords;
 
-    // Gram-Schmidt: the tangent is re-orthogonalised against the normal, and the
-    // bitangent comes from their cross product rather than the vertex attribute.
-    // Transposing an orthonormal basis inverts it, so vTBN maps world space into
-    // tangent space - which is the direction the fragment stage needs.
-    vec3 T = normalize(normalmatrix * aTangent);
-    vec3 N = normalize(normalmatrix * aNormal);
-    T = normalize(T - dot(T, N) * N);
-    vec3 B = cross(N, T);
-    vTBN = transpose(mat3(T, B, N));
-    vTangentViewPos = vTBN * scene.viewpos.xyz;
-    vTangentFragPos = vTBN * vFragPos;
+    if (pc.misc.w > 0.0) {
+        // Gram-Schmidt: the tangent is re-orthogonalised against the normal, and
+        // the bitangent comes from their cross product rather than the attribute.
+        vec3 T = normalize(normalmatrix * aTangent);
+        vec3 N = normalize(vNormal);
+        T = normalize(T - dot(T, N) * N);
+        vec3 B = cross(N, T);
+        vTBN = transpose(mat3(T, B, N));
+        vTangentViewPos = vTBN * scene.viewpos.xyz;
+        vTangentFragPos = vTBN * vFragPos;
+    }
 
     vFragPosLightSpace = scene.lightmatrix * vec4(vFragPos, 1.0);
 }

@@ -43,9 +43,14 @@ public:
 	void disassemble();
 
 	void loadModel(const std::string& modelPath);
+	void loadModelStaticBatched(const std::string& modelPath);
 	void loadModelWithOriginalVertices(const std::string& modelPath);
 	void loadMorphingTargetModel(const std::string& modelPath);
 	void load(const std::string& fullPath);
+	// Loads a non-animated scene with node transforms baked into its vertices and
+	// compatible meshes merged by Assimp. Intended for large static environments:
+	// it drastically reduces both Vulkan uploads and per-frame draw calls.
+	void loadStaticBatched(const std::string& fullPath);
 	void draw();
 	void drawInstanced(const std::vector<glm::mat4>& instanceTransformations);
 
@@ -137,6 +142,7 @@ private:
 	const aiScene* scene;
 	std::vector<const aiScene*> morphingtargetscenes;
 	void loadModelFile(const std::string& fullPath);
+	void loadStaticBatchedFile(const std::string& fullPath);
 	void loadModelFileWithOriginalVertices(const std::string& fullPath);
 	void loadMorphingTargetModelFile(const std::string& fullPath);
 	void processNode(aiNode* node, const aiScene* scene);

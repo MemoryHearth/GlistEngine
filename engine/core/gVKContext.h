@@ -291,8 +291,14 @@ struct gVKContext {
 
 	VkRenderPass* getRenderPass() { return &renderpass; }
 	VkRenderPass getShadowRenderPass() const { return shadowrenderpass; }
-	VkDescriptorSet getShadowDescriptorSet() const { return shadowdescriptorset; }
-	bool hasShadowMap() const { return shadowframebuffer != VK_NULL_HANDLE; }
+	VkDescriptorSet getShadowDescriptorSet() const {
+		return currentframe < shadowdescriptorsets.size()
+				? shadowdescriptorsets[currentframe] : VK_NULL_HANDLE;
+	}
+	bool hasShadowMap() const {
+		return currentframe < shadowframebuffers.size()
+				&& shadowframebuffers[currentframe] != VK_NULL_HANDLE;
+	}
 	VkPipeline getShadowPipeline() const { return shadowpipeline; }
 	VkPipelineLayout getShadowPipelineLayout() const { return shadowpipelinelayout; }
 	// False when the shadow shader does not sample its cutout map, in which case the
@@ -582,15 +588,15 @@ private:
 	VkImageView depthimageview = VK_NULL_HANDLE;
 	VkFormat depthformat = VK_FORMAT_UNDEFINED;
 
-	// Shadow map: a depth-only target drawn from the light's point of view and
-	// sampled while shading. See gVKShadow.h.
-	VkImage shadowimage = VK_NULL_HANDLE;
-	VkDeviceMemory shadowmemory = VK_NULL_HANDLE;
-	VkImageView shadowview = VK_NULL_HANDLE;
+	// One shadow target per frame in flight. Sharing one image forces frame N+1's
+	// depth write to wait for frame N's fragment sampling and serialises the GPU.
+	std::vector<VkImage> shadowimages;
+	std::vector<VkDeviceMemory> shadowmemories;
+	std::vector<VkImageView> shadowviews;
 	VkSampler shadowsampler = VK_NULL_HANDLE;
 	VkRenderPass shadowrenderpass = VK_NULL_HANDLE;
-	VkFramebuffer shadowframebuffer = VK_NULL_HANDLE;
-	VkDescriptorSet shadowdescriptorset = VK_NULL_HANDLE;
+	std::vector<VkFramebuffer> shadowframebuffers;
+	std::vector<VkDescriptorSet> shadowdescriptorsets;
 	// Depth-only pipeline that fills the map. Built with the shadow render pass,
 	// so it cannot exist before that pass does.
 	VkPipeline shadowpipeline = VK_NULL_HANDLE;
