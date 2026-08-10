@@ -275,7 +275,7 @@ struct gVKContext {
 	bool isValidationActive() const { return validationactive; }
 	bool supportsMixedCommandRecording() const { return maintenance7enabled; }
 	bool supportsMultiDrawIndirect() const {
-		return multidrawindirectenabled && drawindirectfirstinstanceenabled;
+		return multidrawindirectenabled;
 	}
 
 	// True once a logical device exists, i.e. init reached the point where the

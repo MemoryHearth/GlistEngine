@@ -119,14 +119,11 @@ struct gVKGeometryAtlas {
 	VkDeviceMemory vertexmemory = VK_NULL_HANDLE;
 	VkBuffer indices = VK_NULL_HANDLE;
 	VkDeviceMemory indexmemory = VK_NULL_HANDLE;
-	std::unordered_map<VkBuffer, VkDeviceSize> vertexoffsets;
-	std::unordered_map<VkBuffer, VkDeviceSize> indexoffsets;
+	std::unordered_map<gVKMeshBuffer*, VkDeviceSize> vertexoffsets;
+	std::unordered_map<gVKMeshBuffer*, VkDeviceSize> indexoffsets;
 	VkBuffer indirect[GVK_MAX_FRAMES_IN_FLIGHT]{};
 	VkDeviceMemory indirectmemory[GVK_MAX_FRAMES_IN_FLIGHT]{};
 	void* indirectmapped[GVK_MAX_FRAMES_IN_FLIGHT]{};
-	VkBuffer models[GVK_MAX_FRAMES_IN_FLIGHT]{};
-	VkDeviceMemory modelmemory[GVK_MAX_FRAMES_IN_FLIGHT]{};
-	void* modelmapped[GVK_MAX_FRAMES_IN_FLIGHT]{};
 	size_t drawcapacity = 0;
 	bool valid = false;
 };
@@ -1795,6 +1792,10 @@ bool gVKRenderEngine::initVulkan() {
 	enabledfeatures.drawIndirectFirstInstance = supportedfeatures.drawIndirectFirstInstance;
 	ctx->multidrawindirectenabled = enabledfeatures.multiDrawIndirect == VK_TRUE;
 	ctx->drawindirectfirstinstanceenabled = enabledfeatures.drawIndirectFirstInstance == VK_TRUE;
+	gLogi("gVKRenderEngine") << "Optional draw features: multiDrawIndirect="
+			<< (ctx->multidrawindirectenabled ? "on" : "off")
+			<< ", drawIndirectFirstInstance="
+			<< (ctx->drawindirectfirstinstanceenabled ? "on" : "off");
 	VkPhysicalDeviceMaintenance7FeaturesKHR enabledmaintenance7{};
 	enabledmaintenance7.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_7_FEATURES_KHR;
 	enabledmaintenance7.maintenance7 = ctx->maintenance7enabled ? VK_TRUE : VK_FALSE;
@@ -1942,8 +1943,6 @@ void gVKRenderEngine::cleanupVulkan() {
 		for(int frame = 0; frame < GVK_MAX_FRAMES_IN_FLIGHT; ++frame) {
 			if(geometryatlas->indirect[frame] != VK_NULL_HANDLE) vkDestroyBuffer(ctx->device, geometryatlas->indirect[frame], nullptr);
 			if(geometryatlas->indirectmemory[frame] != VK_NULL_HANDLE) vkFreeMemory(ctx->device, geometryatlas->indirectmemory[frame], nullptr);
-			if(geometryatlas->models[frame] != VK_NULL_HANDLE) vkDestroyBuffer(ctx->device, geometryatlas->models[frame], nullptr);
-			if(geometryatlas->modelmemory[frame] != VK_NULL_HANDLE) vkFreeMemory(ctx->device, geometryatlas->modelmemory[frame], nullptr);
 		}
 	}
 	delete geometryatlas;
@@ -2090,11 +2089,11 @@ bool gVKRenderEngine::buildQueuedGeometryAtlas() {
 #ifdef GVK_DESKTOP_GLFW
 	if(geometryatlas != nullptr) return geometryatlas->valid;
 	if(vkcontext == nullptr || queuedmeshdraws.empty()) return false;
-	struct Source { VkBuffer buffer; VkDeviceSize size; VkDeviceSize offset; };
+	struct Source { gVKMeshBuffer* mesh; VkDeviceSize size; VkDeviceSize offset; };
 	std::vector<Source> vertexsources;
 	std::vector<Source> indexsources;
-	std::unordered_map<VkBuffer, size_t> seenvertices;
-	std::unordered_map<VkBuffer, size_t> seenindices;
+	std::unordered_map<gVKMeshBuffer*, size_t> seenvertices;
+	std::unordered_map<gVKMeshBuffer*, size_t> seenindices;
 	VkDeviceSize vertexbytes = 0;
 	VkDeviceSize indexbytes = 0;
 	auto alignUp = [](VkDeviceSize value, VkDeviceSize alignment) {
@@ -2105,16 +2104,16 @@ bool gVKRenderEngine::buildQueuedGeometryAtlas() {
 		if(arrayit == vkvertexarrays.end()) return false;
 		gVKMeshBuffer* vertex = getMeshBuffer(arrayit->second.vertexbuffer);
 		gVKMeshBuffer* index = getMeshBuffer(arrayit->second.indexbuffer);
-		if(vertex == nullptr || vertex->isdynamic || (index != nullptr && index->isdynamic)) return false;
-		if(vertex->buffer != VK_NULL_HANDLE && seenvertices.emplace(vertex->buffer, vertexsources.size()).second) {
+		if(vertex == nullptr || vertex->shadow.size() != vertex->size
+				|| (index != nullptr && index->shadow.size() != index->size)) return false;
+		if(seenvertices.emplace(vertex, vertexsources.size()).second) {
 			vertexbytes = alignUp(vertexbytes, sizeof(gVertex));
-			vertexsources.push_back({vertex->buffer, vertex->size, vertexbytes});
+			vertexsources.push_back({vertex, vertex->size, vertexbytes});
 			vertexbytes += vertex->size;
 		}
-		if(index != nullptr && index->buffer != VK_NULL_HANDLE
-				&& seenindices.emplace(index->buffer, indexsources.size()).second) {
+		if(index != nullptr && seenindices.emplace(index, indexsources.size()).second) {
 			indexbytes = alignUp(indexbytes, sizeof(gIndex));
-			indexsources.push_back({index->buffer, index->size, indexbytes});
+			indexsources.push_back({index, index->size, indexbytes});
 			indexbytes += index->size;
 		}
 	}
@@ -2123,6 +2122,7 @@ bool gVKRenderEngine::buildQueuedGeometryAtlas() {
 	if(!gvkCreateBuffer(*vkcontext, vertexbytes,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, atlas->vertices, atlas->vertexmemory)) {
+		gLoge("gVKRenderEngine") << "Static geometry atlas vertex allocation failed: " << vertexbytes << " bytes.";
 		delete atlas;
 		return false;
 	}
@@ -2136,21 +2136,45 @@ bool gVKRenderEngine::buildQueuedGeometryAtlas() {
 	}
 	atlas->drawcapacity = queuedmeshdraws.size();
 	const VkDeviceSize indirectbytes = atlas->drawcapacity * sizeof(VkDrawIndexedIndirectCommand);
-	const VkDeviceSize modelbytes = atlas->drawcapacity * sizeof(glm::mat4);
 	for(int frame = 0; frame < GVK_MAX_FRAMES_IN_FLIGHT; ++frame) {
 		if(!gvkCreateBuffer(*vkcontext, indirectbytes, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
 				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 				atlas->indirect[frame], atlas->indirectmemory[frame])
-				|| !gvkCreateBuffer(*vkcontext, modelbytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-				atlas->models[frame], atlas->modelmemory[frame])
 				|| vkMapMemory(vkcontext->device, atlas->indirectmemory[frame], 0,
-						indirectbytes, 0, &atlas->indirectmapped[frame]) != VK_SUCCESS
-				|| vkMapMemory(vkcontext->device, atlas->modelmemory[frame], 0,
-						modelbytes, 0, &atlas->modelmapped[frame]) != VK_SUCCESS) {
+						indirectbytes, 0, &atlas->indirectmapped[frame]) != VK_SUCCESS) {
 			geometryatlas = atlas;
 			return false;
 		}
+	}
+	VkBuffer vertexstaging = VK_NULL_HANDLE;
+	VkDeviceMemory vertexstagingmemory = VK_NULL_HANDLE;
+	VkBuffer indexstaging = VK_NULL_HANDLE;
+	VkDeviceMemory indexstagingmemory = VK_NULL_HANDLE;
+	if(!gvkCreateBuffer(*vkcontext, vertexbytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			vertexstaging, vertexstagingmemory)
+			|| (indexbytes > 0 && !gvkCreateBuffer(*vkcontext, indexbytes,
+					VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+					indexstaging, indexstagingmemory))) return false;
+	void* mapped = nullptr;
+	if(vkMapMemory(vkcontext->device, vertexstagingmemory, 0, vertexbytes, 0, &mapped) != VK_SUCCESS)
+		return false;
+	for(const Source& source : vertexsources) {
+		std::memcpy(static_cast<unsigned char*>(mapped) + source.offset,
+				source.mesh->shadow.data(), static_cast<size_t>(source.size));
+		atlas->vertexoffsets[source.mesh] = source.offset;
+	}
+	vkUnmapMemory(vkcontext->device, vertexstagingmemory);
+	if(indexbytes > 0) {
+		if(vkMapMemory(vkcontext->device, indexstagingmemory, 0, indexbytes, 0, &mapped) != VK_SUCCESS)
+			return false;
+		for(const Source& source : indexsources) {
+			std::memcpy(static_cast<unsigned char*>(mapped) + source.offset,
+					source.mesh->shadow.data(), static_cast<size_t>(source.size));
+			atlas->indexoffsets[source.mesh] = source.offset;
+		}
+		vkUnmapMemory(vkcontext->device, indexstagingmemory);
 	}
 	VkCommandPool pool = VK_NULL_HANDLE;
 	VkCommandPoolCreateInfo poolinfo{};
@@ -2172,15 +2196,11 @@ bool gVKRenderEngine::buildQueuedGeometryAtlas() {
 	begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	vkBeginCommandBuffer(cmd, &begin);
-	for(const Source& source : vertexsources) {
-		VkBufferCopy copy{0, source.offset, source.size};
-		vkCmdCopyBuffer(cmd, source.buffer, atlas->vertices, 1, &copy);
-		atlas->vertexoffsets[source.buffer] = source.offset;
-	}
-	for(const Source& source : indexsources) {
-		VkBufferCopy copy{0, source.offset, source.size};
-		vkCmdCopyBuffer(cmd, source.buffer, atlas->indices, 1, &copy);
-		atlas->indexoffsets[source.buffer] = source.offset;
+	VkBufferCopy vertexcopy{0, 0, vertexbytes};
+	vkCmdCopyBuffer(cmd, vertexstaging, atlas->vertices, 1, &vertexcopy);
+	if(indexbytes > 0) {
+		VkBufferCopy indexcopy{0, 0, indexbytes};
+		vkCmdCopyBuffer(cmd, indexstaging, atlas->indices, 1, &indexcopy);
 	}
 	vkEndCommandBuffer(cmd);
 	VkSubmitInfo submit{};
@@ -2189,6 +2209,10 @@ bool gVKRenderEngine::buildQueuedGeometryAtlas() {
 	submit.pCommandBuffers = &cmd;
 	const VkResult submitted = vkQueueSubmit(*vkcontext->getGraphicsQueue(), 1, &submit, VK_NULL_HANDLE);
 	if(submitted == VK_SUCCESS) vkQueueWaitIdle(*vkcontext->getGraphicsQueue());
+	vkDestroyBuffer(vkcontext->device, vertexstaging, nullptr);
+	vkFreeMemory(vkcontext->device, vertexstagingmemory, nullptr);
+	if(indexstaging != VK_NULL_HANDLE) vkDestroyBuffer(vkcontext->device, indexstaging, nullptr);
+	if(indexstagingmemory != VK_NULL_HANDLE) vkFreeMemory(vkcontext->device, indexstagingmemory, nullptr);
 	vkDestroyCommandPool(vkcontext->device, pool, nullptr);
 	if(submitted != VK_SUCCESS) return false;
 	geometryatlas = atlas;
@@ -2211,7 +2235,29 @@ bool gVKRenderEngine::recordQueuedOpaqueDrawsParallel() {
 	const VkDescriptorSet whiteset = vktextures[whitetextureid]->descriptorset;
 	const VkDescriptorSet sceneset = vkcontext->getCurrentSceneDescriptorSet();
 	if(whiteset == VK_NULL_HANDLE || sceneset == VK_NULL_HANDLE) return false;
-	const bool useatlas = vkcontext->supportsMultiDrawIndirect() && buildQueuedGeometryAtlas();
+	auto sameindirectstate = [](const QueuedMeshDraw& a, const QueuedMeshDraw& b) {
+		return std::memcmp(&a.model, &b.model, sizeof(a.model)) == 0
+				&& a.drawmode == b.drawmode && a.instancecount == b.instancecount
+				&& a.depthtest == b.depthtest && a.depthtesttype == b.depthtesttype
+				&& a.culling == b.culling && a.cullface == b.cullface
+				&& a.cullingdirection == b.cullingdirection
+				&& std::memcmp(&a.tint, &b.tint, sizeof(a.tint)) == 0
+				&& a.surface.diffusemapid == b.surface.diffusemapid
+				&& a.surface.specularmapid == b.surface.specularmapid
+				&& a.surface.normalmapid == b.surface.normalmapid
+				&& a.surface.shininess == b.surface.shininess
+				&& std::memcmp(&a.surface.ambient, &b.surface.ambient, sizeof(a.surface.ambient)) == 0
+				&& std::memcmp(&a.surface.diffuse, &b.surface.diffuse, sizeof(a.surface.diffuse)) == 0
+				&& std::memcmp(&a.surface.specular, &b.surface.specular, sizeof(a.surface.specular)) == 0;
+	};
+	size_t indirectgroups = 1;
+	for(size_t i = 1; i < queuedmeshdraws.size(); ++i)
+		if(!sameindirectstate(queuedmeshdraws[i - 1], queuedmeshdraws[i])) ++indirectgroups;
+	// Indirect encoding has a measurable fixed cost on translation layers. Use it
+	// only when it removes at least 75% of the API-level draw calls.
+	const bool indirectworthwhile = indirectgroups * 4 <= queuedmeshdraws.size();
+	const bool useatlas = vkcontext->supportsMultiDrawIndirect() && indirectworthwhile
+			&& buildQueuedGeometryAtlas();
 
 	struct OpaquePacket {
 		VkBuffer vertex = VK_NULL_HANDLE;
@@ -2249,12 +2295,12 @@ bool gVKRenderEngine::recordQueuedOpaqueDrawsParallel() {
 				? draw.indexcount : draw.vertexcount;
 		if(packet.vertex == VK_NULL_HANDLE || count <= 0) return false;
 		if(useatlas) {
-			auto vertexatlas = geometryatlas->vertexoffsets.find(packet.vertex);
+			auto vertexatlas = geometryatlas->vertexoffsets.find(vertices);
 			if(vertexatlas == geometryatlas->vertexoffsets.end()) return false;
 			packet.vertex = geometryatlas->vertices;
 			packet.vertexoffset += vertexatlas->second;
 			if(packet.index != VK_NULL_HANDLE) {
-				auto indexatlas = geometryatlas->indexoffsets.find(packet.index);
+				auto indexatlas = geometryatlas->indexoffsets.find(indices);
 				if(indexatlas == geometryatlas->indexoffsets.end()) return false;
 				packet.index = geometryatlas->indices;
 				packet.indexoffset = indexatlas->second;
@@ -2305,21 +2351,16 @@ bool gVKRenderEngine::recordQueuedOpaqueDrawsParallel() {
 		if(packets.size() > geometryatlas->drawcapacity) return false;
 		auto* commands = static_cast<VkDrawIndexedIndirectCommand*>(
 				geometryatlas->indirectmapped[frameslot]);
-		auto* models = static_cast<glm::mat4*>(geometryatlas->modelmapped[frameslot]);
 		for(size_t i = 0; i < packets.size(); ++i) {
 			OpaquePacket& packet = packets[i];
 			if(packet.index == VK_NULL_HANDLE || packet.vertexoffset % sizeof(gVertex) != 0
 					|| packet.indexoffset % sizeof(gIndex) != 0) return false;
-			models[i] = packet.push.model;
 			commands[i] = {packet.count, 1,
 					static_cast<uint32_t>(packet.indexoffset / sizeof(gIndex)),
 					static_cast<int32_t>(packet.vertexoffset / sizeof(gVertex)),
-					static_cast<uint32_t>(i)};
+					0};
 			packet.vertexoffset = 0;
 			packet.indexoffset = 0;
-			packet.instances = geometryatlas->models[frameslot];
-			packet.push.model = glm::mat4(1.0f);
-			packet.push.misc.y += 2.0f;
 		}
 	}
 	if(!gvkEnsureRenderPass(*vkcontext)) return false;
@@ -2352,6 +2393,7 @@ bool gVKRenderEngine::recordQueuedOpaqueDrawsParallel() {
 			return a.depthtest == b.depthtest && a.depthcompare == b.depthcompare
 					&& a.cullmode == b.cullmode && a.frontface == b.frontface
 					&& std::memcmp(a.sets, b.sets, sizeof(a.sets)) == 0
+					&& std::memcmp(&a.push.model, &b.push.model, sizeof(a.push.model)) == 0
 					&& std::memcmp(&a.push.ambient, &b.push.ambient,
 							sizeof(a.push.ambient) + sizeof(a.push.diffuse)
 							+ sizeof(a.push.specular) + sizeof(a.push.misc)) == 0;
