@@ -416,6 +416,19 @@ struct gVKContext {
 	VkCommandBuffer getCurrentCommandBuffer() {
 		return frameactive ? commandbuffers[currentframe] : VK_NULL_HANDLE;
 	}
+	const std::vector<VkCommandBuffer>& getCurrentShadowWorkerBuffers() const {
+		static const std::vector<VkCommandBuffer> empty;
+		return currentframe < shadowworkerbuffers.size() ? shadowworkerbuffers[currentframe] : empty;
+	}
+	VkFramebuffer getCurrentShadowFramebuffer() const {
+		return currentframe < shadowframebuffers.size() ? shadowframebuffers[currentframe] : VK_NULL_HANDLE;
+	}
+	VkExtent2D getShadowExtent() const { return shadowextent; }
+	void resetCurrentShadowWorkerPools() {
+		if(currentframe >= shadowworkerpools.size()) return;
+		for(VkCommandPool pool : shadowworkerpools[currentframe])
+			if(pool != VK_NULL_HANDLE) vkResetCommandPool(device, pool, 0);
+	}
 
 	// Per-frame vertex ring. resetDynamicVertices() rewinds the current frame's
 	// buffer at frame start; pushDynamicVertices() appends vertex bytes (16-byte
@@ -620,6 +633,8 @@ private:
 	VkCommandPool commandpool = VK_NULL_HANDLE;
 	// GVK_MAX_FRAMES_IN_FLIGHT entries, indexed by currentframe.
 	std::vector<VkCommandBuffer> commandbuffers;
+	std::vector<std::vector<VkCommandPool>> shadowworkerpools;
+	std::vector<std::vector<VkCommandBuffer>> shadowworkerbuffers;
 
 	// GVK_MAX_FRAMES_IN_FLIGHT entries, indexed by currentframe.
 	std::vector<VkSemaphore> imageavailablesemaphores;

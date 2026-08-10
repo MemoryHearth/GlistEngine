@@ -18,6 +18,7 @@ struct gVKContext;
 struct gVKTexture;
 struct gVKFramebuffer;
 struct gVKMeshBuffer;
+struct gVKShadowWorkerPool;
 
 // What a vertex array id stands for: the pair of buffer ids that were bound while
 // it was current, 0 meaning nothing was bound. Vulkan has no vertex array object,
@@ -280,6 +281,7 @@ private:
 	bool initVulkan();
 	void cleanupVulkan();
 	gVKContext* vkcontext = nullptr;
+	gVKShadowWorkerPool* shadowworkerpool = nullptr;
 	void updatePackUnpackAlignment(int i) override;
 
 	// Registry backing the GLuint texture ids gTexture/gImage hand out: createTextures
@@ -378,6 +380,7 @@ private:
 	bool flushingqueueddraws = false;
 	bool canMergeQueuedDraws(const QueuedMeshDraw& first, const QueuedMeshDraw& next) const;
 	void recordQueuedDrawGroup(size_t first, size_t count);
+	void recordQueuedShadowDrawsParallel();
 	void destroyAllTextures();
 	// The Vulkan texture behind the currently bound id, or null when there is none
 	// yet - gTexture sets filtering and wrapping both before and after the upload.

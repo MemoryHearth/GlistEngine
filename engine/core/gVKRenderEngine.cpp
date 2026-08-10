@@ -54,6 +54,64 @@
 	#include <array>
 	#include <map>
 	#include <cstdlib>
+	#include <thread>
+	#include <condition_variable>
+	#include <functional>
+	#include <mutex>
+#endif
+
+#ifdef GVK_DESKTOP_GLFW
+struct gVKShadowWorkerPool {
+	explicit gVKShadowWorkerPool(size_t count) {
+		workers.reserve(count);
+		for(size_t i = 0; i < count; ++i) workers.emplace_back([this, i] { run(i); });
+	}
+	~gVKShadowWorkerPool() {
+		{
+			std::lock_guard<std::mutex> lock(mutex);
+			stopping = true;
+			++generation;
+		}
+		start.notify_all();
+		for(std::thread& worker : workers) if(worker.joinable()) worker.join();
+	}
+	void dispatch(const std::function<void(size_t)>& task) {
+		std::unique_lock<std::mutex> lock(mutex);
+		job = task;
+		remaining = workers.size();
+		++generation;
+		start.notify_all();
+		done.wait(lock, [this] { return remaining == 0; });
+		job = {};
+	}
+	size_t size() const { return workers.size(); }
+private:
+	void run(size_t index) {
+		uint64_t seen = 0;
+		for(;;) {
+			std::function<void(size_t)> task;
+			{
+				std::unique_lock<std::mutex> lock(mutex);
+				start.wait(lock, [this, &seen] { return stopping || generation != seen; });
+				if(stopping) return;
+				seen = generation;
+				task = job;
+			}
+			task(index);
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				if(--remaining == 0) done.notify_one();
+			}
+		}
+	}
+	std::vector<std::thread> workers;
+	std::mutex mutex;
+	std::condition_variable start, done;
+	std::function<void(size_t)> job;
+	size_t remaining = 0;
+	uint64_t generation = 0;
+	bool stopping = false;
+};
 #endif
 
 #ifdef GVK_DESKTOP_GLFW
@@ -1821,6 +1879,8 @@ bool gVKRenderEngine::initVulkan() {
 
 void gVKRenderEngine::cleanupVulkan() {
 #ifdef GVK_DESKTOP_GLFW
+	delete shadowworkerpool;
+	shadowworkerpool = nullptr;
 	if(vkcontext == nullptr) return;
 	gVKContext* ctx = vkcontext;
 	// Destroying objects the GPU is still using is a validation error, so the
@@ -1938,6 +1998,13 @@ void gVKRenderEngine::endFrame() {
 
 void gVKRenderEngine::flushQueuedDraws() {
 	if(queuedmeshdraws.empty() || flushingqueueddraws) return;
+#ifdef GVK_DESKTOP_GLFW
+	if(vkcontext != nullptr && vkcontext->isShadowPassActive()) {
+		recordQueuedShadowDrawsParallel();
+		queuedmeshdraws.clear();
+		return;
+	}
+#endif
 	// Keep the submission order intact.  Opaque meshes can share one instanced draw
 	// only when every material and raster state input is identical; unlike sorting,
 	// this cannot change equal-depth results or application-visible draw order.
@@ -1953,6 +2020,123 @@ void gVKRenderEngine::flushQueuedDraws() {
 	queuedmeshdraws.clear();
 }
 
+void gVKRenderEngine::recordQueuedShadowDrawsParallel() {
+#ifdef GVK_DESKTOP_GLFW
+	if(vkcontext == nullptr || queuedmeshdraws.empty()) return;
+	const std::vector<VkCommandBuffer>& available = vkcontext->getCurrentShadowWorkerBuffers();
+	if(available.empty() || !ensureIdentityInstanceBuffer()) return;
+
+	struct ShadowPacket {
+		VkBuffer vertex = VK_NULL_HANDLE;
+		VkDeviceSize vertexoffset = 0;
+		VkBuffer index = VK_NULL_HANDLE;
+		VkBuffer instances = VK_NULL_HANDLE;
+		VkDeviceSize instanceoffset = 0;
+		uint32_t count = 0;
+		uint32_t instancecount = 1;
+		VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+		gVKShadowPush push{};
+	};
+	std::vector<ShadowPacket> packets;
+	packets.reserve(queuedmeshdraws.size());
+	for(const QueuedMeshDraw& draw : queuedmeshdraws) {
+		ShadowPacket packet;
+		if(draw.drawmode == GL_TRIANGLES) packet.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+		else if(draw.drawmode == GL_TRIANGLE_STRIP) packet.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+		else continue;
+		auto arrayit = vkvertexarrays.find(draw.vertexarrayid);
+		if(arrayit == vkvertexarrays.end()) continue;
+		gVKMeshBuffer* vertices = getMeshBuffer(arrayit->second.vertexbuffer);
+		if(vertices == nullptr) continue;
+		packet.vertex = gvkResolveMeshBuffer(*vkcontext, *vertices, packet.vertexoffset);
+		if(packet.vertex == VK_NULL_HANDLE) continue;
+		gVKMeshBuffer* indices = getMeshBuffer(arrayit->second.indexbuffer);
+		VkDeviceSize ignored = 0;
+		if(indices != nullptr) packet.index = gvkResolveMeshBuffer(*vkcontext, *indices, ignored);
+		const int drawcount = packet.index != VK_NULL_HANDLE && draw.indexcount > 0
+				? draw.indexcount : draw.vertexcount;
+		if(drawcount <= 0) continue;
+		packet.count = static_cast<uint32_t>(drawcount);
+		packet.instancecount = static_cast<uint32_t>(std::max(draw.instancecount, 1));
+		packet.instances = identityinstancebuffer->buffer;
+		if(packet.instancecount > 1) {
+			gVKMeshBuffer* instances = getMeshBuffer(arrayit->second.instancebuffer);
+			if(instances == nullptr) continue;
+			packet.instances = gvkResolveMeshBuffer(*vkcontext, *instances, packet.instanceoffset);
+		}
+		if(packet.instances == VK_NULL_HANDLE) continue;
+		packet.push.lightmodel = shadowlightmatrix * draw.model;
+		packet.push.misc.y = packet.instancecount > 1 ? 1.0f : 0.0f;
+		packets.push_back(packet);
+	}
+	if(packets.empty()) return;
+
+	vkcontext->resetCurrentShadowWorkerPools();
+	const size_t requestedworkers = packets.size() < 512 ? 1 : available.size();
+	const size_t workercount = std::min(requestedworkers, packets.size());
+	std::vector<VkCommandBuffer> recorded(workercount, VK_NULL_HANDLE);
+	auto recordworker = [&](size_t worker) {
+		const size_t first = packets.size() * worker / workercount;
+		const size_t last = packets.size() * (worker + 1) / workercount;
+		VkCommandBuffer cmd = available[worker];
+		VkCommandBufferInheritanceInfo inheritance{};
+		inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+		inheritance.renderPass = vkcontext->getShadowRenderPass();
+		inheritance.subpass = 0;
+		inheritance.framebuffer = vkcontext->getCurrentShadowFramebuffer();
+		VkCommandBufferBeginInfo begin{};
+		begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+				| VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+		begin.pInheritanceInfo = &inheritance;
+		if(vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS) return;
+		const VkExtent2D extent = vkcontext->getShadowExtent();
+		VkViewport viewport{0.0f, 0.0f, static_cast<float>(extent.width),
+				static_cast<float>(extent.height), 0.0f, 1.0f};
+		VkRect2D scissor{{0, 0}, extent};
+		vkCmdSetViewport(cmd, 0, 1, &viewport);
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkcontext->getShadowPipeline());
+		vkCmdSetDepthTestEnable(cmd, VK_TRUE);
+		vkCmdSetDepthWriteEnable(cmd, VK_TRUE);
+		vkCmdSetDepthCompareOp(cmd, VK_COMPARE_OP_LESS);
+		vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
+		vkCmdSetFrontFace(cmd, VK_FRONT_FACE_CLOCKWISE);
+		VkPrimitiveTopology lasttopology = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+		for(size_t i = first; i < last; ++i) {
+			const ShadowPacket& packet = packets[i];
+			if(packet.topology != lasttopology) {
+				vkCmdSetPrimitiveTopology(cmd, packet.topology);
+				lasttopology = packet.topology;
+			}
+			VkBuffer buffers[] = {packet.vertex, packet.instances};
+			VkDeviceSize offsets[] = {packet.vertexoffset, packet.instanceoffset};
+			vkCmdBindVertexBuffers(cmd, 0, 2, buffers, offsets);
+			const uint32_t pushsize = std::min<uint32_t>(sizeof(packet.push),
+					vkcontext->getShadowPushSize());
+			if(pushsize > 0) vkCmdPushConstants(cmd, vkcontext->getShadowPipelineLayout(),
+					vkcontext->getShadowPushStages(), 0, pushsize, &packet.push);
+			if(packet.index != VK_NULL_HANDLE) {
+				vkCmdBindIndexBuffer(cmd, packet.index, 0,
+						sizeof(gIndex) == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+				vkCmdDrawIndexed(cmd, packet.count, packet.instancecount, 0, 0, 0);
+			} else vkCmdDraw(cmd, packet.count, packet.instancecount, 0, 0);
+		}
+		if(vkEndCommandBuffer(cmd) == VK_SUCCESS) recorded[worker] = cmd;
+	};
+	if(workercount == 1) recordworker(0);
+	else {
+		if(shadowworkerpool == nullptr || shadowworkerpool->size() != available.size()) {
+			delete shadowworkerpool;
+			shadowworkerpool = new gVKShadowWorkerPool(available.size());
+		}
+		shadowworkerpool->dispatch(recordworker);
+	}
+	recorded.erase(std::remove(recorded.begin(), recorded.end(), VK_NULL_HANDLE), recorded.end());
+	if(!recorded.empty()) vkCmdExecuteCommands(vkcontext->getCurrentCommandBuffer(),
+			static_cast<uint32_t>(recorded.size()), recorded.data());
+#endif
+}
 bool gVKRenderEngine::canMergeQueuedDraws(const QueuedMeshDraw& first, const QueuedMeshDraw& next) const {
 	auto samevec4 = [](const glm::vec4& a, const glm::vec4& b) {
 		return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w;

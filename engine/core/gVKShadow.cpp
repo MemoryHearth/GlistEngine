@@ -298,19 +298,8 @@ bool gvkBeginShadowPass(gVKContext& ctx) {
 	info.renderArea.extent = ctx.shadowextent;
 	info.clearValueCount = 1;
 	info.pClearValues = &clear;
-	vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+	vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
 	ctx.resetRecordedDrawState();
-
-	VkViewport viewport{};
-	viewport.x = 0.0f;
-	viewport.y = 0.0f;
-	viewport.width = static_cast<float>(ctx.shadowextent.width);
-	viewport.height = static_cast<float>(ctx.shadowextent.height);
-	viewport.minDepth = 0.0f;
-	viewport.maxDepth = 1.0f;
-	vkCmdSetViewport(cmd, 0, 1, &viewport);
-	VkRect2D scissor{{0, 0}, ctx.shadowextent};
-	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
 	ctx.renderpassactive = true;
 	ctx.shadowpassactive = true;
