@@ -2027,6 +2027,10 @@ void gVKRenderEngine::flushQueuedDraws() {
 		queuedmeshdraws.clear();
 		return;
 	}
+	if(vkcontext != nullptr && recordQueuedOpaqueDrawsParallel()) {
+		queuedmeshdraws.clear();
+		return;
+	}
 #endif
 	// Keep the submission order intact.  Opaque meshes can share one instanced draw
 	// only when every material and raster state input is identical; unlike sorting,
@@ -2041,6 +2045,156 @@ void gVKRenderEngine::flushQueuedDraws() {
 		first += count;
 	}
 	queuedmeshdraws.clear();
+}
+
+bool gVKRenderEngine::recordQueuedOpaqueDrawsParallel() {
+#ifdef GVK_DESKTOP_GLFW
+	if(vkcontext == nullptr || !vkcontext->supportsMixedCommandRecording()
+			|| queuedmeshdraws.size() < 512) return false;
+	const std::vector<VkCommandBuffer>& available = vkcontext->getCurrentOpaqueWorkerBuffers();
+	if(available.empty() || !ensureIdentityInstanceBuffer() || !ensureWhiteTexture()) return false;
+	const VkDescriptorSet whiteset = vktextures[whitetextureid]->descriptorset;
+	const VkDescriptorSet sceneset = vkcontext->getCurrentSceneDescriptorSet();
+	if(whiteset == VK_NULL_HANDLE || sceneset == VK_NULL_HANDLE) return false;
+
+	struct OpaquePacket {
+		VkBuffer vertex = VK_NULL_HANDLE;
+		VkDeviceSize vertexoffset = 0;
+		VkBuffer index = VK_NULL_HANDLE;
+		VkBuffer instances = VK_NULL_HANDLE;
+		VkDeviceSize instanceoffset = 0;
+		uint32_t count = 0;
+		uint32_t instancecount = 1;
+		VkDescriptorSet sets[5]{};
+		gVKMeshPush push{};
+		VkCullModeFlags cullmode = VK_CULL_MODE_NONE;
+		VkFrontFace frontface = VK_FRONT_FACE_CLOCKWISE;
+		VkBool32 depthtest = VK_FALSE;
+		VkCompareOp depthcompare = VK_COMPARE_OP_LESS;
+	};
+	std::vector<OpaquePacket> packets;
+	packets.reserve(queuedmeshdraws.size());
+	for(const QueuedMeshDraw& draw : queuedmeshdraws) {
+		// PBR, line/strip and explicit instancing retain the full immediate path.
+		// The common static-map case is indexed triangle-list geometry.
+		if(draw.surface.ispbr || draw.drawmode != GL_TRIANGLES || draw.instancecount != 1)
+			return false;
+		auto arrayit = vkvertexarrays.find(draw.vertexarrayid);
+		if(arrayit == vkvertexarrays.end()) return false;
+		gVKMeshBuffer* vertices = getMeshBuffer(arrayit->second.vertexbuffer);
+		gVKMeshBuffer* indices = getMeshBuffer(arrayit->second.indexbuffer);
+		if(vertices == nullptr) return false;
+		OpaquePacket packet;
+		packet.vertex = gvkResolveMeshBuffer(*vkcontext, *vertices, packet.vertexoffset);
+		VkDeviceSize ignored = 0;
+		if(indices != nullptr) packet.index = gvkResolveMeshBuffer(*vkcontext, *indices, ignored);
+		const int count = packet.index != VK_NULL_HANDLE && draw.indexcount > 0
+				? draw.indexcount : draw.vertexcount;
+		if(packet.vertex == VK_NULL_HANDLE || count <= 0) return false;
+		packet.count = static_cast<uint32_t>(count);
+		packet.instances = identityinstancebuffer->buffer;
+		packet.sets[0] = sceneset;
+		packet.sets[1] = whiteset;
+		packet.sets[2] = whiteset;
+		packet.sets[3] = whiteset;
+		packet.sets[4] = vkcontext->hasShadowMap()
+				? vkcontext->getShadowDescriptorSet() : whiteset;
+		auto textureSet = [&](GLuint id) -> VkDescriptorSet {
+			auto it = vktextures.find(id);
+			return it != vktextures.end() && it->second != nullptr
+					? it->second->descriptorset : VK_NULL_HANDLE;
+		};
+		const VkDescriptorSet diffuse = textureSet(draw.surface.diffusemapid);
+		const VkDescriptorSet specular = textureSet(draw.surface.specularmapid);
+		const VkDescriptorSet normal = textureSet(draw.surface.normalmapid);
+		if(diffuse != VK_NULL_HANDLE) packet.sets[1] = diffuse;
+		if(specular != VK_NULL_HANDLE) packet.sets[2] = specular;
+		if(normal != VK_NULL_HANDLE) packet.sets[3] = normal;
+		packet.push.model = draw.model;
+		packet.push.ambient = diffuse != VK_NULL_HANDLE ? draw.tint : draw.surface.ambient * draw.tint;
+		packet.push.diffuse = diffuse != VK_NULL_HANDLE ? draw.tint : draw.surface.diffuse * draw.tint;
+		packet.push.specular = specular != VK_NULL_HANDLE ? draw.tint : draw.surface.specular * draw.tint;
+		packet.push.misc = glm::vec4(draw.surface.shininess,
+				diffuse != VK_NULL_HANDLE ? 1.0f : 0.0f,
+				specular != VK_NULL_HANDLE ? 1.0f : 0.0f,
+				normal != VK_NULL_HANDLE ? 1.0f : 0.0f);
+		packet.depthtest = draw.depthtest ? VK_TRUE : VK_FALSE;
+		packet.depthcompare = draw.depthtesttype == DEPTHTESTTYPE_ALWAYS
+				? VK_COMPARE_OP_ALWAYS : VK_COMPARE_OP_LESS;
+		if(draw.culling) {
+			if(draw.cullface == GL_FRONT) packet.cullmode = VK_CULL_MODE_FRONT_BIT;
+			else if(draw.cullface == GL_FRONT_AND_BACK) packet.cullmode = VK_CULL_MODE_FRONT_AND_BACK;
+			else packet.cullmode = VK_CULL_MODE_BACK_BIT;
+		}
+		packet.frontface = draw.cullingdirection == GL_CW
+				? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
+		packets.push_back(packet);
+	}
+	if(packets.empty() || !gvkEnsureRenderPass(*vkcontext)) return false;
+	vkcontext->resetCurrentOpaqueWorkerPools();
+	const size_t workercount = std::min(available.size(), packets.size());
+	std::vector<VkCommandBuffer> recorded(workercount, VK_NULL_HANDLE);
+	auto recordworker = [&](size_t worker) {
+		const size_t first = packets.size() * worker / workercount;
+		const size_t last = packets.size() * (worker + 1) / workercount;
+		VkCommandBuffer cmd = available[worker];
+		VkCommandBufferInheritanceInfo inheritance{};
+		inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+		inheritance.renderPass = *vkcontext->getRenderPass();
+		inheritance.subpass = 0;
+		inheritance.framebuffer = vkcontext->getCurrentFramebuffer();
+		VkCommandBufferBeginInfo begin{};
+		begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+				| VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+		begin.pInheritanceInfo = &inheritance;
+		if(vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS) return;
+		const VkExtent2D extent = vkcontext->getSwapchainExtentValue();
+		VkViewport viewport{0.0f, static_cast<float>(extent.height),
+				static_cast<float>(extent.width), -static_cast<float>(extent.height), 0.0f, 1.0f};
+		VkRect2D scissor{{0, 0}, extent};
+		vkCmdSetViewport(cmd, 0, 1, &viewport);
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkcontext->getMesh3DPipeline(false));
+		for(size_t i = first; i < last; ++i) {
+			const OpaquePacket& packet = packets[i];
+			vkCmdSetDepthTestEnable(cmd, packet.depthtest);
+			vkCmdSetDepthWriteEnable(cmd, packet.depthtest);
+			vkCmdSetDepthCompareOp(cmd, packet.depthcompare);
+			vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+			vkCmdSetCullMode(cmd, packet.cullmode);
+			vkCmdSetFrontFace(cmd, packet.frontface);
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+					vkcontext->getMesh3DPipelineLayout(), 0, 5, packet.sets, 0, nullptr);
+			VkBuffer buffers[] = {packet.vertex, packet.instances};
+			VkDeviceSize offsets[] = {packet.vertexoffset, packet.instanceoffset};
+			vkCmdBindVertexBuffers(cmd, 0, 2, buffers, offsets);
+			const uint32_t pushsize = std::min<uint32_t>(sizeof(packet.push),
+					vkcontext->getMesh3DPushSize());
+			vkCmdPushConstants(cmd, vkcontext->getMesh3DPipelineLayout(),
+					vkcontext->getMesh3DPushStages(), 0, pushsize, &packet.push);
+			if(packet.index != VK_NULL_HANDLE) {
+				vkCmdBindIndexBuffer(cmd, packet.index, 0,
+						sizeof(gIndex) == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+				vkCmdDrawIndexed(cmd, packet.count, 1, 0, 0, 0);
+			} else vkCmdDraw(cmd, packet.count, 1, 0, 0);
+		}
+		if(vkEndCommandBuffer(cmd) == VK_SUCCESS) recorded[worker] = cmd;
+	};
+	if(shadowworkerpool == nullptr || shadowworkerpool->size() != available.size()) {
+		delete shadowworkerpool;
+		shadowworkerpool = new gVKShadowWorkerPool(available.size());
+	}
+	shadowworkerpool->dispatch(recordworker);
+	recorded.erase(std::remove(recorded.begin(), recorded.end(), VK_NULL_HANDLE), recorded.end());
+	if(recorded.empty()) return false;
+	vkCmdExecuteCommands(vkcontext->getCurrentCommandBuffer(),
+			static_cast<uint32_t>(recorded.size()), recorded.data());
+	vkcontext->resetRecordedDrawState();
+	return true;
+#else
+	return false;
+#endif
 }
 
 void gVKRenderEngine::recordQueuedShadowDrawsParallel() {

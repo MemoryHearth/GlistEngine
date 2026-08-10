@@ -41,6 +41,10 @@ bool gvkCreateCommandResources(gVKContext& ctx) {
 			std::vector<VkCommandPool>(workerthreads, VK_NULL_HANDLE));
 	ctx.shadowworkerbuffers.assign(GVK_MAX_FRAMES_IN_FLIGHT,
 			std::vector<VkCommandBuffer>(workerthreads, VK_NULL_HANDLE));
+	ctx.opaqueworkerpools.assign(GVK_MAX_FRAMES_IN_FLIGHT,
+			std::vector<VkCommandPool>(workerthreads, VK_NULL_HANDLE));
+	ctx.opaqueworkerbuffers.assign(GVK_MAX_FRAMES_IN_FLIGHT,
+			std::vector<VkCommandBuffer>(workerthreads, VK_NULL_HANDLE));
 	for(int frame = 0; frame < GVK_MAX_FRAMES_IN_FLIGHT; ++frame) {
 		for(unsigned int worker = 0; worker < workerthreads; ++worker) {
 			VkCommandPoolCreateInfo poolinfo{};
@@ -59,6 +63,18 @@ bool gvkCreateCommandResources(gVKContext& ctx) {
 			alloc.commandBufferCount = 1;
 			if(vkAllocateCommandBuffers(ctx.device, &alloc,
 					&ctx.shadowworkerbuffers[frame][worker]) != VK_SUCCESS) {
+				gvkDestroyCommandResources(ctx);
+				return false;
+			}
+			poolinfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+			if(vkCreateCommandPool(ctx.device, &poolinfo, nullptr,
+					&ctx.opaqueworkerpools[frame][worker]) != VK_SUCCESS) {
+				gvkDestroyCommandResources(ctx);
+				return false;
+			}
+			alloc.commandPool = ctx.opaqueworkerpools[frame][worker];
+			if(vkAllocateCommandBuffers(ctx.device, &alloc,
+					&ctx.opaqueworkerbuffers[frame][worker]) != VK_SUCCESS) {
 				gvkDestroyCommandResources(ctx);
 				return false;
 			}
@@ -97,6 +113,11 @@ void gvkDestroyCommandResources(gVKContext& ctx) {
 			if(pool != VK_NULL_HANDLE) vkDestroyCommandPool(ctx.device, pool, nullptr);
 	ctx.shadowworkerpools.clear();
 	ctx.shadowworkerbuffers.clear();
+	for(auto& pools : ctx.opaqueworkerpools)
+		for(VkCommandPool pool : pools)
+			if(pool != VK_NULL_HANDLE) vkDestroyCommandPool(ctx.device, pool, nullptr);
+	ctx.opaqueworkerpools.clear();
+	ctx.opaqueworkerbuffers.clear();
 
 	// Destroying the pool frees every command buffer allocated from it, so calling
 	// vkFreeCommandBuffers beforehand would be redundant.

@@ -381,6 +381,7 @@ private:
 	bool canMergeQueuedDraws(const QueuedMeshDraw& first, const QueuedMeshDraw& next) const;
 	void recordQueuedDrawGroup(size_t first, size_t count);
 	void recordQueuedShadowDrawsParallel();
+	bool recordQueuedOpaqueDrawsParallel();
 	void destroyAllTextures();
 	// The Vulkan texture behind the currently bound id, or null when there is none
 	// yet - gTexture sets filtering and wrapping both before and after the upload.
