@@ -67,10 +67,10 @@ static VkExtent2D gvkPickExtent(const VkSurfaceCapabilitiesKHR& caps, GLFWwindow
 static VkPresentModeKHR gvkPickPresentMode(const std::vector<VkPresentModeKHR>& modes, bool vsyncenabled) {
 	if(vsyncenabled) return VK_PRESENT_MODE_FIFO_KHR;
 	for(VkPresentModeKHR mode : modes) {
-		if(mode == VK_PRESENT_MODE_IMMEDIATE_KHR) return mode;
+		if(mode == VK_PRESENT_MODE_MAILBOX_KHR) return mode;
 	}
 	for(VkPresentModeKHR mode : modes) {
-		if(mode == VK_PRESENT_MODE_MAILBOX_KHR) return mode;
+		if(mode == VK_PRESENT_MODE_IMMEDIATE_KHR) return mode;
 	}
 	return VK_PRESENT_MODE_FIFO_KHR;
 }
