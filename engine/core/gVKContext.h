@@ -42,7 +42,7 @@ struct GLFWwindow;
 struct gVKContext;
 
 // How many frames the CPU may prepare while the GPU is still busy with earlier ones.
-inline constexpr int GVK_MAX_FRAMES_IN_FLIGHT = 2;
+inline constexpr int GVK_MAX_FRAMES_IN_FLIGHT = 3;
 inline constexpr uint32_t GVK_SCENE_UNIFORM_SLOTS = 16;
 
 // Declared here as well so the struct can befriend them.
