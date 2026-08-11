@@ -97,14 +97,20 @@ bool gvkUploadMeshBuffer(gVKContext& ctx, gVKMeshBuffer& buf, const void* data,
 	const bool wasallocated = buf.isdynamic || buf.buffer != VK_NULL_HANDLE;
 	const bool shapechanged = wasallocated && (buf.size != size || buf.isindex != isIndex);
 
-	// The second upload is the signal that this mesh rewrites its own vertices -
-	// CPU skinning does it on every animation frame. Staging such a buffer means a
+	// A second upload while a frame is being recorded is the signal that this mesh
+	// rewrites its own vertices - CPU skinning does it on every animation frame.
+	// Repeated uploads during setup are not that signal: importers can finish or
+	// batch a static mesh in multiple steps before the render loop starts. Treating
+	// those as dynamic made large static maps copy their entire vertex payload into
+	// the per-frame arena forever (roughly 100 MB/frame for Martyr map3).
+	//
+	// Staging a genuinely dynamic buffer means a
 	// device local copy per update, and because the copy is submitted to the
 	// graphics queue and waited on, each one drains everything already queued: the
 	// frame being recorded ends up serialised against the one before it. Moving the
 	// buffer to host visible memory removes the copy, the submit and the wait, and
 	// leaves an upload costing one memcpy.
-	if(!buf.isdynamic && wasallocated && !shapechanged) {
+	if(!buf.isdynamic && wasallocated && !shapechanged && ctx.isFrameActive()) {
 		if(!gvkMakeMeshBufferDynamic(ctx, buf, size, isIndex)) return false;
 	}
 

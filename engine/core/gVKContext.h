@@ -311,6 +311,7 @@ struct gVKContext {
 	uint32_t getShadowPushSize() const { return shadowpushsize; }
 	VkShaderStageFlags getShadowPushStages() const { return shadowpushstages; }
 	bool isShadowPassActive() const { return shadowpassactive; }
+	bool isFrameActive() const { return frameactive; }
 	std::vector<VkFramebuffer>* getFramebuffers() { return &framebuffers; }
 
 	// Depth attachment shared by every framebuffer. VK_FORMAT_UNDEFINED until the

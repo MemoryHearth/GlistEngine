@@ -2060,7 +2060,11 @@ void gVKRenderEngine::endFrame() {
 void gVKRenderEngine::flushQueuedDraws() {
 	if(queuedmeshdraws.empty() || flushingqueueddraws) return;
 #ifdef GVK_DESKTOP_GLFW
-	if(vkcontext != nullptr && vkcontext->isShadowPassActive()) {
+	if(vkcontext != nullptr && vkcontext->isShadowPassActive()
+			&& queuedmeshdraws.size() >= 512) {
+		// Secondary command buffers pay a fixed execute/translation cost. Keep a
+		// small number of large shadow casters inline; worker recording only wins
+		// once there are enough independent draws to distribute.
 		recordQueuedShadowDrawsParallel();
 		queuedmeshdraws.clear();
 		return;
