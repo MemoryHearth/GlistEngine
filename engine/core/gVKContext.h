@@ -701,27 +701,6 @@ struct gVKContext {
 		return true;
 	}
 
-#ifdef GVK_PERF_LOGGING
-	// Per-frame command tally, so the measured record time can be attributed to the
-	// draws that produced it instead of guessed at. The bind counters count the
-	// binds that survived the cache above, which is what tells a cache that is
-	// working from one that is missing on every draw.
-	void countDraw2D() { framedraws2d++; }
-	void countDraw3D() { framedraws3d++; }
-	void countVertexBind() { framevertexbinds++; }
-	void countDescriptorBind() { framedescriptorbinds++; }
-	void resetFrameCounters() {
-		framedraws2d = 0;
-		framedraws3d = 0;
-		framevertexbinds = 0;
-		framedescriptorbinds = 0;
-	}
-	int getFrameDraws2D() const { return framedraws2d; }
-	int getFrameDraws3D() const { return framedraws3d; }
-	int getFrameVertexBinds() const { return framevertexbinds; }
-	int getFrameDescriptorBinds() const { return framedescriptorbinds; }
-#endif
-
 private:
 	std::string appname = "GlistApp";
 	std::string enginename = "GlistEngine";
@@ -962,12 +941,6 @@ private:
 	VkBuffer recordedindexbuffer = VK_NULL_HANDLE;
 	VkDeviceSize recordedindexoffset = 0;
 	VkIndexType recordedindextype = VK_INDEX_TYPE_UINT32;
-#ifdef GVK_PERF_LOGGING
-	int framedraws2d = 0;
-	int framedraws3d = 0;
-	int framevertexbinds = 0;
-	int framedescriptorbinds = 0;
-#endif
 };
 
 #endif /* GVK_VULKAN */

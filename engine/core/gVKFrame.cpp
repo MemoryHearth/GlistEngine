@@ -107,9 +107,6 @@ bool gvkBeginFrame(gVKContext& ctx, gBaseWindow* window) {
 	// The vertex ring has just been rewound, so any batch left over from a frame
 	// that ended badly now points at bytes about to be overwritten.
 	gvkReset2DBatch();
-#ifdef GVK_PERF_LOGGING
-	ctx.resetFrameCounters();
-#endif
 	ctx.renderpassactive = false;
 	ctx.frameactive = true;
 	return true;
@@ -268,29 +265,6 @@ bool gvkEndFrame(gVKContext& ctx, gBaseWindow* window) {
 	// reads finished textures and vertices without the CPU waiting for either.
 	gvkFlushUploads(ctx);
 
-#ifdef GVK_PERF_LOGGING
-	// What the frame actually recorded. Printed next to the timings so a record cost
-	// can be read as "too many draws" or "too much state per draw" rather than both.
-	{
-		static int perfframes = 0;
-		static long perfdraws2d = 0;
-		static long perfdraws3d = 0;
-		static long perfvertexbinds = 0;
-		static long perfdescriptorbinds = 0;
-		perfdraws2d += ctx.getFrameDraws2D();
-		perfdraws3d += ctx.getFrameDraws3D();
-		perfvertexbinds += ctx.getFrameVertexBinds();
-		perfdescriptorbinds += ctx.getFrameDescriptorBinds();
-		if(++perfframes == 30) {
-			gLogi("VKPERF") << "avg per frame: draws2d=" << perfdraws2d / perfframes
-					<< " draws3d=" << perfdraws3d / perfframes
-					<< " vertexbinds=" << perfvertexbinds / perfframes
-					<< " descriptorbinds=" << perfdescriptorbinds / perfframes;
-			perfframes = 0;
-			perfdraws2d = perfdraws3d = perfvertexbinds = perfdescriptorbinds = 0;
-		}
-	}
-#endif
 
 	// Reset only immediately before submission. Any earlier recording error must
 	// leave the already-signalled fence intact so the next frame cannot deadlock.

@@ -575,10 +575,6 @@ void gAppManager::tick() {
     // clearColor() call at the top of draw() still sets the colour the pass clears
     // to, and any geometry recorded afterwards lands inside that same pass.
     if(renderengine == G_RENDERER_VK) {
-#ifdef GVK_PERF_LOGGING
-		using VkPerfClock = std::chrono::steady_clock;
-		const auto vkperfframestart = VkPerfClock::now();
-#endif
         if(canvasmanager) canvasmanager->update();
         if(guimanager) guimanager->update();
         if(!isguiapp) app->update();
@@ -591,13 +587,7 @@ void gAppManager::tick() {
 
         gBaseCanvas* vkcanvas = (canvasmanager && !isguiapp) ? canvasmanager->getCurrentCanvas() : nullptr;
         if(vkcanvas) vkcanvas->update();
-#ifdef GVK_PERF_LOGGING
-		const auto vkperfupdateend = VkPerfClock::now();
-#endif
         if(renderer != nullptr && renderer->beginFrame()) {
-#ifdef GVK_PERF_LOGGING
-			const auto vkperfacquireend = VkPerfClock::now();
-#endif
             // The scene is drawn once per render pass, the same way the OpenGL loop
             // below does it. renderpassnum is 1 normally and 2 once gShadowMap has
             // been activated: pass 0 fills the shadow map from the light's point of
@@ -612,34 +602,9 @@ void gAppManager::tick() {
 				renderer->flushQueuedDraws();
                 if(shadowpass) renderer->endShadowPass();
             }
-#ifdef GVK_PERF_LOGGING
-			const auto vkperfrecordend = VkPerfClock::now();
-#endif
             renderpassno = 0;
             if(guimanager) guimanager->draw();
             renderer->endFrame();
-#ifdef GVK_PERF_LOGGING
-			const auto vkperfsubmitend = VkPerfClock::now();
-			static double vkperfupdate = 0.0;
-			static double vkperfacquire = 0.0;
-			static double vkperfrecord = 0.0;
-			static double vkperfsubmit = 0.0;
-			static int vkperfframes = 0;
-			vkperfupdate += std::chrono::duration<double, std::milli>(vkperfupdateend - vkperfframestart).count();
-			vkperfacquire += std::chrono::duration<double, std::milli>(vkperfacquireend - vkperfupdateend).count();
-			vkperfrecord += std::chrono::duration<double, std::milli>(vkperfrecordend - vkperfacquireend).count();
-			vkperfsubmit += std::chrono::duration<double, std::milli>(vkperfsubmitend - vkperfrecordend).count();
-			if(++vkperfframes == 30) {
-				gLogi("VKPERF") << "avg ms: update=" << vkperfupdate / vkperfframes
-						<< " acquire=" << vkperfacquire / vkperfframes
-						<< " record=" << vkperfrecord / vkperfframes
-						<< " submit/present=" << vkperfsubmit / vkperfframes
-						<< " screen=" << renderer->getScreenWidth() << "x" << renderer->getScreenHeight()
-						<< " passes=" << renderpassnum;
-				vkperfupdate = vkperfacquire = vkperfrecord = vkperfsubmit = 0.0;
-				vkperfframes = 0;
-			}
-#endif
             totaldraws++;
         }
         if(inputmanager) inputmanager->update();

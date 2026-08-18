@@ -705,15 +705,6 @@ endif()
 #
 # On by default in Debug builds where shaderc is present. Multi-config
 # generators leave CMAKE_BUILD_TYPE empty, so those need -DGLIST_VK_SHADER_HOT_RELOAD=ON.
-# Per-frame Vulkan timing (update / acquire / record / submit), averaged over 30
-# frames into a VKPERF log line. Off by default because the timing calls sit in
-# the frame loop; turn it on with -DGLIST_VK_PERF_LOGGING=ON when deciding which
-# part of the frame to work on.
-option(GLIST_VK_PERF_LOGGING "Log the Vulkan frame time breakdown" OFF)
-if(GLIST_VK_PERF_LOGGING)
-	target_compile_definitions(GlistEngine PUBLIC GVK_PERF_LOGGING)
-endif()
-
 option(GLIST_VK_SHADER_HOT_RELOAD "Compile the Vulkan 2D shaders at run time (needs shaderc)" OFF)
 if(Lib_Vulkan AND (GLIST_VK_SHADER_HOT_RELOAD OR CMAKE_BUILD_TYPE STREQUAL "Debug"))
 	set(GLIST_SHADERC_FOUND FALSE)

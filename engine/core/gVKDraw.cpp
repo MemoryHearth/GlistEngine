@@ -11,20 +11,6 @@
 #include <algorithm>
 #include <vector>
 
-// The frame tally the perf build prints. Wrapped so the draw code below reads the
-// same in both builds; these compile away entirely when the option is off.
-#ifdef GVK_PERF_LOGGING
-static void gvkCountDraw2D(gVKContext& ctx) { ctx.countDraw2D(); }
-static void gvkCountDraw3D(gVKContext& ctx) { ctx.countDraw3D(); }
-static void gvkCountVertexBind(gVKContext& ctx) { ctx.countVertexBind(); }
-static void gvkCountDescriptorBind(gVKContext& ctx) { ctx.countDescriptorBind(); }
-#else
-static void gvkCountDraw2D(gVKContext&) {}
-static void gvkCountDraw3D(gVKContext&) {}
-static void gvkCountVertexBind(gVKContext&) {}
-static void gvkCountDescriptorBind(gVKContext&) {}
-#endif
-
 // 4 MB of vertices per frame in flight. A batched 2D frame is not the handful of
 // triangles the unbatched path recorded: every quad, glyph and outline the frame
 // draws now lives here at once, at 48 bytes a vertex, until the batch it belongs
@@ -204,20 +190,17 @@ void gvkFlush2DBatch(gVKContext& ctx) {
 	const VkDeviceSize bindoffset = 0;
 	if(ctx.shouldBindVertexBuffers(&vbuf, &bindoffset, 1)) {
 		vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &bindoffset);
-		gvkCountVertexBind(ctx);
 	}
 	if(gvk2dbatch.setcount > 0
 			&& ctx.shouldBindDescriptorSets(gvk2dbatch.layout, gvk2dbatch.sets, gvk2dbatch.setcount)) {
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gvk2dbatch.layout,
 				0, gvk2dbatch.setcount, gvk2dbatch.sets, 0, nullptr);
-		gvkCountDescriptorBind(ctx);
 	}
 	if(gvk2dbatch.pushsize > 0) {
 		const gvk2DPush push{gvk2dbatch.masking};
 		vkCmdPushConstants(cmd, gvk2dbatch.layout, gvk2dbatch.pushstages, 0,
 				std::min<uint32_t>(sizeof(push), gvk2dbatch.pushsize), &push);
 	}
-	gvkCountDraw2D(ctx);
 	vkCmdDraw(cmd, gvk2dbatch.vertexcount, 1,
 			static_cast<uint32_t>(gvk2dbatch.beginoffset / sizeof(gvk2DVertex)), 0);
 	gvk2dbatch.vertexcount = 0;
@@ -442,7 +425,6 @@ void gvkDrawMesh3D(gVKContext& ctx, VkBuffer vertexBuffer, VkDeviceSize vertexOf
 		if(ctx.shouldBindDescriptorSets(ctx.getMesh3DPipelineLayout(), sets, 3)) {
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.getMesh3DPipelineLayout(),
 					0, 3, sets, 0, nullptr);
-			gvkCountDescriptorBind(ctx);
 		}
 	}
 
@@ -455,7 +437,6 @@ void gvkDrawMesh3D(gVKContext& ctx, VkBuffer vertexBuffer, VkDeviceSize vertexOf
 	const uint32_t bindingcount = instanceBuffer != VK_NULL_HANDLE ? 2u : 1u;
 	if(ctx.shouldBindVertexBuffers(buffers, offsets, bindingcount)) {
 		vkCmdBindVertexBuffers(cmd, 0, bindingcount, buffers, offsets);
-		gvkCountVertexBind(ctx);
 	}
 
 	const uint32_t pushsize = std::min<uint32_t>(sizeof(push), ctx.getMesh3DPushSize());
@@ -468,10 +449,8 @@ void gvkDrawMesh3D(gVKContext& ctx, VkBuffer vertexBuffer, VkDeviceSize vertexOf
 		if(ctx.shouldBindIndexBuffer(indexBuffer, 0, indexType)) {
 			vkCmdBindIndexBuffer(cmd, indexBuffer, 0, indexType);
 		}
-		gvkCountDraw3D(ctx);
 		vkCmdDrawIndexed(cmd, static_cast<uint32_t>(count), instances, 0, 0, 0);
 	} else {
-		gvkCountDraw3D(ctx);
 		vkCmdDraw(cmd, static_cast<uint32_t>(count), instances, 0, 0);
 	}
 }
@@ -508,7 +487,6 @@ void gvkDrawShadowCaster(gVKContext& ctx, VkBuffer vertexBuffer, VkDeviceSize ve
 			&& ctx.shouldBindDescriptorSets(ctx.getShadowPipelineLayout(), &diffuseSet, 1)) {
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.getShadowPipelineLayout(),
 				0, 1, &diffuseSet, 0, nullptr);
-		gvkCountDescriptorBind(ctx);
 	}
 
 	VkBuffer buffers[] = {vertexBuffer, instanceBuffer};
@@ -516,7 +494,6 @@ void gvkDrawShadowCaster(gVKContext& ctx, VkBuffer vertexBuffer, VkDeviceSize ve
 	const uint32_t bindingcount = instanceBuffer != VK_NULL_HANDLE ? 2u : 1u;
 	if(ctx.shouldBindVertexBuffers(buffers, offsets, bindingcount)) {
 		vkCmdBindVertexBuffers(cmd, 0, bindingcount, buffers, offsets);
-		gvkCountVertexBind(ctx);
 	}
 
 	const uint32_t pushsize = std::min<uint32_t>(sizeof(push), ctx.getShadowPushSize());
@@ -547,10 +524,8 @@ void gvkDrawShadowCaster(gVKContext& ctx, VkBuffer vertexBuffer, VkDeviceSize ve
 		if(ctx.shouldBindIndexBuffer(indexBuffer, 0, indexType)) {
 			vkCmdBindIndexBuffer(cmd, indexBuffer, 0, indexType);
 		}
-		gvkCountDraw3D(ctx);
 		vkCmdDrawIndexed(cmd, static_cast<uint32_t>(count), instances, 0, 0, 0);
 	} else {
-		gvkCountDraw3D(ctx);
 		vkCmdDraw(cmd, static_cast<uint32_t>(count), instances, 0, 0);
 	}
 }
@@ -597,7 +572,6 @@ void gvkDrawMesh3DPbr(gVKContext& ctx, VkBuffer vertexBuffer, VkDeviceSize verte
 	if(ctx.shouldBindDescriptorSets(ctx.getMesh3DPbrPipelineLayout(), sets, 3)) {
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.getMesh3DPbrPipelineLayout(),
 				0, 3, sets, 0, nullptr);
-		gvkCountDescriptorBind(ctx);
 	}
 
 	VkBuffer buffers[] = {vertexBuffer, instanceBuffer};
@@ -605,7 +579,6 @@ void gvkDrawMesh3DPbr(gVKContext& ctx, VkBuffer vertexBuffer, VkDeviceSize verte
 	const uint32_t bindingcount = instanceBuffer != VK_NULL_HANDLE ? 2u : 1u;
 	if(ctx.shouldBindVertexBuffers(buffers, offsets, bindingcount)) {
 		vkCmdBindVertexBuffers(cmd, 0, bindingcount, buffers, offsets);
-		gvkCountVertexBind(ctx);
 	}
 
 	const uint32_t pushsize = std::min<uint32_t>(sizeof(push), ctx.getMesh3DPbrPushSize());
@@ -619,10 +592,8 @@ void gvkDrawMesh3DPbr(gVKContext& ctx, VkBuffer vertexBuffer, VkDeviceSize verte
 		if(ctx.shouldBindIndexBuffer(indexBuffer, 0, indexType)) {
 			vkCmdBindIndexBuffer(cmd, indexBuffer, 0, indexType);
 		}
-		gvkCountDraw3D(ctx);
 		vkCmdDrawIndexed(cmd, static_cast<uint32_t>(count), instances, 0, 0, 0);
 	} else {
-		gvkCountDraw3D(ctx);
 		vkCmdDraw(cmd, static_cast<uint32_t>(count), instances, 0, 0);
 	}
 }
@@ -695,12 +666,10 @@ void gvkDrawSkyboxFace(gVKContext& ctx, VkDescriptorSet faceSet, const float* xy
 	VkBuffer vbuf = ctx.getCurrentDynamicVertexBuffer();
 	if(ctx.shouldBindVertexBuffers(&vbuf, &offset, 1)) {
 		vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &offset);
-		gvkCountVertexBind(ctx);
 	}
 	if(ctx.shouldBindDescriptorSets(ctx.getSkyboxPipelineLayout(), &faceSet, 1)) {
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.getSkyboxPipelineLayout(),
 				0, 1, &faceSet, 0, nullptr);
-		gvkCountDescriptorBind(ctx);
 	}
 
 	const uint32_t pushsize = std::min<uint32_t>(sizeof(viewProjection), ctx.getSkyboxPushSize());
@@ -708,7 +677,6 @@ void gvkDrawSkyboxFace(gVKContext& ctx, VkDescriptorSet faceSet, const float* xy
 		vkCmdPushConstants(cmd, ctx.getSkyboxPipelineLayout(), ctx.getSkyboxPushStages(),
 				0, pushsize, &viewProjection);
 	}
-	gvkCountDraw2D(ctx);
 	vkCmdDraw(cmd, static_cast<uint32_t>(vertexCount), 1, 0, 0);
 }
 
