@@ -227,33 +227,6 @@ void gRenderer::init() {
 	colorshader->attachUbo("Lights", lightsubo);
 	colorshader->attachUbo("Scene", sceneubo);
 
-	// Screen-space primitives do not need the general 3D material/light shader.
-	// Keeping them on a tiny dedicated program also avoids executing its normal
-	// mapping, shadow, fog and HDR branches for every pixel of fullscreen UI.
-	static const std::string flatcolorvertex = R"GLSL(#if GLES
-#version 300 es
-precision highp float;
-#else
-#version 330 core
-#endif
-layout(location = 0) in vec3 aPos;
-uniform mat4 projection;
-uniform mat4 model;
-void main() { gl_Position = projection * model * vec4(aPos, 1.0); }
-)GLSL";
-	static const std::string flatcolorfragment = R"GLSL(#if GLES
-#version 300 es
-precision highp float;
-#else
-#version 330 core
-#endif
-uniform vec4 color;
-out vec4 FragColor;
-void main() { FragColor = color; }
-)GLSL";
-	flatcolorshader = new gShader();
-	flatcolorshader->loadProgram(flatcolorvertex, flatcolorfragment);
-
 	textureshader = new gShader();
 	textureshader->loadProgram(getShaderSrcTextureVertex(), getShaderSrcTextureFragment());
 	textureshader->use();
@@ -391,7 +364,6 @@ void gRenderer::cleanup() {
 	cleanupSSAOResources();
 
 	delete colorshader;
-	delete flatcolorshader;
 	delete textureshader;
 	delete fontshader;
 	delete imageshader;
@@ -410,7 +382,6 @@ void gRenderer::cleanup() {
 	delete sceneubo;
 
 	colorshader = nullptr;
-	flatcolorshader = nullptr;
 	textureshader = nullptr;
 	fontshader = nullptr;
 	imageshader = nullptr;
@@ -605,7 +576,6 @@ unsigned int gRenderer::getFullscreenQuadVAO() const {
 }
 
 gShader* gRenderer::getColorShader() { return colorshader; }
-gShader* gRenderer::getFlatColorShader() { return flatcolorshader; }
 gShader* gRenderer::getTextureShader() { return textureshader; }
 gShader* gRenderer::getFontShader() { return fontshader; }
 gShader* gRenderer::getImageShader() { return imageshader; }

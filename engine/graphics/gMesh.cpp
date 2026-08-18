@@ -325,15 +325,6 @@ void gMesh::bindMaterialTextures(gShader& shader) {
 
 void gMesh::drawStart(bool isInstanced) {
 	G_PROFILE_ZONE_SCOPED_N("gMesh::drawStart()");
-		if(isprojection2d) {
-			gShader& flatshader = *renderer->getFlatColorShader();
-			gColor* color = renderer->getColor();
-			flatshader.use();
-			flatshader.setMat4("projection", renderer->getProjectionMatrix2d());
-			flatshader.setMat4("model", localtransformationmatrix.back());
-			flatshader.setVec4("color", color->r, color->g, color->b, color->a);
-			return;
-		}
 		if(isshadowmappingenabled && renderpassno == 0) {
 			renderer->getShadowmapShader()->use();
 			renderer->getShadowmapShader()->setMat4("model", localtransformationmatrix.back());

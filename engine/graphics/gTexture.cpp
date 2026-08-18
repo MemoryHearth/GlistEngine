@@ -427,14 +427,10 @@ void gTexture::setDataInternal(unsigned char* textureData, bool isMutable, bool 
 	if (data) {
 		bind();
 		renderer->texImage2D(GL_TEXTURE_2D, format, width, height, format, GL_UNSIGNED_BYTE, data);
+		renderer->generateMipMap();
+		renderer->texImage2D(GL_TEXTURE_2D, format, getWidth(), getHeight(), format, GL_UNSIGNED_BYTE, data);
 		renderer->setWrappingAndFiltering(GL_TEXTURE_2D, GL_REPEAT, GL_REPEAT,
 		                                     texturefilter[filtermin], texturefilter[filtermag]);
-		// Upload the base level once, then derive the mip chain from that image.
-		// Re-specifying level zero after glGenerateMipmap invalidated/rebuilt driver
-		// storage and was especially costly in the iOS Simulator software renderer.
-		if (filtermin == TEXTUREMINMAGFILTER_MIPMAPLINEAR) {
-			renderer->generateMipMap();
-		}
 
 		if (format == GL_RG) {
 			GLint swizzleMask[] = {GL_RED, GL_RED, GL_RED, GL_GREEN};

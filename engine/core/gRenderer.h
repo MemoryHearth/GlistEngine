@@ -37,14 +37,9 @@
 #include <OpenGL/glu.h>
 #endif
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-#	if defined(GLIST_IOS_ANGLE)
-#		include <GLES3/gl3.h>
-#		include <GLES3/gl3ext.h>
-#	else
-#		include <OpenGLES/ES3/gl.h>
-#		include <OpenGLES/ES3/glext.h>
-#		include <OpenGLES/gltypes.h>
-#	endif
+#	include <OpenGLES/ES3/gl.h>
+#	include <OpenGLES/ES3/glext.h>
+#	include <OpenGLES/gltypes.h>
 #endif
 #define GLM_ENABLE_EXPERIMENTAL
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
@@ -497,7 +492,6 @@ public:
 	void disableSoftShadows();
 
 	gShader* getColorShader();
-	gShader* getFlatColorShader();
 	gShader* getTextureShader();
 	gShader* getFontShader();
 	gShader* getImageShader();
@@ -753,7 +747,6 @@ protected:
 	bool issoftshadowsenabled = false;
 
 	gShader* colorshader;
-	gShader* flatcolorshader;
 	gShader* textureshader;
 	gShader* fontshader;
 	gShader* imageshader;

@@ -16,8 +16,6 @@
 #include "gVKRenderEngine.h"
 
 #include <algorithm>
-#include <cstdint>
-#include <limits>
 #include <thread>
 #include "gGUIAppThread.h"
 #include "gTracy.h"
@@ -1064,15 +1062,7 @@ bool gAppManager::onTouchEvent(gTouchEvent& event) {
 #endif
 
 void gAppManager::updateTime() {
-	// INT_MAX is used by applications to mean "uncapped". Adding one while this
-	// is still an int overflows, producing a negative frame duration on mobile.
-	// Treat uncapped explicitly and do the remaining arithmetic at 64-bit width.
-	if(targetframerate <= 0 || targetframerate == std::numeric_limits<int>::max()) {
-		targettimestep = AppClockDuration::zero();
-		return;
-	}
-	targettimestep = AppClockDuration(1'000'000'000LL /
-			(static_cast<int64_t>(targetframerate) + 1));
+	targettimestep = AppClockDuration(1'000'000'000 / (targetframerate + 1));
 }
 
 void gAppManager::submitToMainThread(std::function<void()> fn) {

@@ -91,14 +91,15 @@ out vec4 FragColor;
 float calculateShadow(vec4 fragPosLightSpace, bool softShadows) {
     vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
     projCoords = projCoords * 0.5 + 0.5;
+    float closestDepth = texture(shadowMap, projCoords.xy).r;
     float currentDepth = projCoords.z;
     vec3 normal = normalize(Normal);
     vec3 lightDir = normalize(shadowLightPos - FragPos);
     float bias = max(0.05 * (1.0 - dot(normal, lightDir)), 0.005);
     float shadow = 0.0;
+    vec2 texelSize = vec2(1.0, 1.0) / vec2(textureSize(shadowMap, 0));
 
     if (softShadows) {
-        vec2 texelSize = vec2(1.0, 1.0) / vec2(textureSize(shadowMap, 0));
         // 5x5 PCF for softer shadows
         for(int x = -2; x <= 2; ++x) {
             for(int y = -2; y <= 2; ++y) {
@@ -108,11 +109,14 @@ float calculateShadow(vec4 fragPosLightSpace, bool softShadows) {
         }
         shadow /= 25.0;
     } else {
-        // A hard shadow is one depth comparison. The old fallback still ran a
-        // 3x3 PCF kernel, making "soft shadows disabled" cost nine texture
-        // samples per fragment while producing another filtered shadow.
-        float closestDepth = texture(shadowMap, projCoords.xy).r;
-        shadow = currentDepth - bias > closestDepth ? 1.0 : 0.0;
+        // Standard 3x3 PCF
+        for(int x = -1; x <= 1; ++x) {
+            for(int y = -1; y <= 1; ++y) {
+                float pcfDepth = texture(shadowMap, projCoords.xy + vec2(x, y) * texelSize).r;
+                shadow += currentDepth - bias > pcfDepth ? 1.0 : 0.0;
+            }
+        }
+        shadow /= 9.0;
     }
 
     if(projCoords.z > 1.0) shadow = 0.0;
