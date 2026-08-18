@@ -591,11 +591,20 @@ if(EMSCRIPTEN)
 	# These are added by gipWebGL plugin
 	# Do not remove this block
 elseif(ANDROID)
-	# These are added by gipAndroid plugin
-	# Do not remove this block
+	find_library(Lib_Vulkan vulkan)
+	if(Lib_Vulkan)
+		target_compile_definitions(GlistEngine PRIVATE GLIST_HAS_VULKAN VK_USE_PLATFORM_ANDROID_KHR)
+	else()
+		message(STATUS "Android Vulkan loader not found; Vulkan backend disabled")
+	endif()
 elseif(IOS)
-	# These are added by gipIOS plugin
-	# Do not remove this block
+	if(GLIST_IOS_HAS_VULKAN AND Lib_Vulkan)
+		# gipIOS platform sources are compiled into the application target, so the
+		# Vulkan availability/platform definitions must reach consumers too.
+		target_compile_definitions(GlistEngine PUBLIC GLIST_HAS_VULKAN VK_USE_PLATFORM_METAL_EXT)
+	else()
+		message(STATUS "iOS MoltenVK not configured; Vulkan backend disabled")
+	endif()
 elseif(WIN32)
 	find_library(GLIST_VULKAN_LIBRARY
 		NAMES vulkan-1
@@ -696,6 +705,15 @@ endif()
 #
 # On by default in Debug builds where shaderc is present. Multi-config
 # generators leave CMAKE_BUILD_TYPE empty, so those need -DGLIST_VK_SHADER_HOT_RELOAD=ON.
+# Per-frame Vulkan timing (update / acquire / record / submit), averaged over 30
+# frames into a VKPERF log line. Off by default because the timing calls sit in
+# the frame loop; turn it on with -DGLIST_VK_PERF_LOGGING=ON when deciding which
+# part of the frame to work on.
+option(GLIST_VK_PERF_LOGGING "Log the Vulkan frame time breakdown" OFF)
+if(GLIST_VK_PERF_LOGGING)
+	target_compile_definitions(GlistEngine PUBLIC GVK_PERF_LOGGING)
+endif()
+
 option(GLIST_VK_SHADER_HOT_RELOAD "Compile the Vulkan 2D shaders at run time (needs shaderc)" OFF)
 if(Lib_Vulkan AND (GLIST_VK_SHADER_HOT_RELOAD OR CMAKE_BUILD_TYPE STREQUAL "Debug"))
 	set(GLIST_SHADERC_FOUND FALSE)
@@ -716,7 +734,7 @@ if(Lib_Vulkan AND (GLIST_VK_SHADER_HOT_RELOAD OR CMAKE_BUILD_TYPE STREQUAL "Debu
 			set(GLIST_SHADERC_FOUND TRUE)
 			set(GLIST_SHADERC_ORIGIN "${GLIST_SHADERC_LIBRARY}")
 		endif()
-	else()
+	elseif(NOT ANDROID AND NOT IOS)
 		find_package(PkgConfig QUIET)
 		if(PKG_CONFIG_FOUND)
 			pkg_check_modules(shaderc QUIET IMPORTED_TARGET shaderc)
@@ -840,10 +858,10 @@ if(EMSCRIPTEN)
 	# Do not remove this block
 elseif(ANDROID)
 	# These are added by gipAndroid plugin
-	# Do not remove this block
+	list(APPEND LINK_LIBS ${Lib_Vulkan})
 elseif(IOS)
 	# These are added by gipIOS plugin
-	# Do not remove this block
+	list(APPEND LINK_LIBS ${Lib_Vulkan})
 elseif(WIN32)
 	list(APPEND LINK_LIBS
 		assimp
