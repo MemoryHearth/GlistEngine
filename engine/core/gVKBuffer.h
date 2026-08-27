@@ -28,9 +28,22 @@ uint32_t gvkFindMemoryType(gVKContext& ctx, uint32_t typeFilter, VkMemoryPropert
 // for buffers the CPU writes and the GPU reads every frame: on a device that
 // exposes device local memory as host visible those belong there rather than in
 // system RAM, which the GPU can only reach across the bus.
+//
+// outGotPreferred, when given, reports whether the allocation actually landed in
+// preferred memory. A caller that only benefits from it can ignore it; one for
+// which the slow memory is worse than not growing at all - the mesh arena is
+// exactly that - reads it and undoes the allocation. Always true when preferred
+// is 0, since nothing was asked for.
 bool gvkCreateBuffer(gVKContext& ctx, VkDeviceSize size, VkBufferUsageFlags usage,
 		VkMemoryPropertyFlags properties, VkBuffer& outBuffer, VkDeviceMemory& outMemory,
-		VkMemoryPropertyFlags preferred = 0);
+		VkMemoryPropertyFlags preferred = 0, bool* outGotPreferred = nullptr);
+
+// Writes what the device says about its memory heaps to the log: how large each
+// one is, which of them the GPU reads at full speed, and which of them the CPU can
+// write into. Called once at startup, because every performance problem this
+// backend has that a UMA machine cannot reproduce comes back to these numbers -
+// and a report from a machine we do not have is only actionable with them in it.
+void gvkLogMemoryHeaps(gVKContext& ctx);
 
 // Transfer work - staging copies into device local buffers and images, and the
 // layout transitions around them - is recorded into a shared batch rather than

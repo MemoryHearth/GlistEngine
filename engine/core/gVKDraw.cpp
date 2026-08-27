@@ -43,15 +43,37 @@ bool gvkEnsureMeshArena(gVKContext& ctx, VkDeviceSize capacity) {
 	std::vector<VkBuffer> buffers(frames, VK_NULL_HANDLE);
 	std::vector<VkDeviceMemory> memories(frames, VK_NULL_HANDLE);
 	std::vector<void*> mapped(frames, nullptr);
+	//
+	// A growth is only worth having in memory the GPU reads at full speed. Every
+	// vertex the arena holds is fetched on every draw that reads it, and on a
+	// discrete GPU the fallback is system RAM across the bus - so a larger arena
+	// there is slower than the smaller one it replaced, in exactly the scenes that
+	// asked for the growth. The first arena is different: without one there is no
+	// merged drawing at all, so it is accepted wherever it fits and the warning in
+	// gvkCreateBuffer says where that was.
+	const bool isfirstarena = ctx.mesharenacapacity == 0;
+	bool fastmemory = true;
 	for(int i = 0; i < frames; i++) {
-		if(!gvkCreateBuffer(ctx, capacity, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+		bool gotpreferred = false;
+		const bool created = gvkCreateBuffer(ctx, capacity, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 				buffers[i], memories[i],
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-						| VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-				|| vkMapMemory(ctx.device, memories[i], 0, capacity, 0, &mapped[i]) != VK_SUCCESS) {
-			gLogw("gVKDraw") << "Could not grow the mesh arena to " << capacity
-					<< " bytes; keeping the " << ctx.mesharenacapacity << " byte one.";
+						| VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &gotpreferred);
+		if(created) fastmemory = fastmemory && gotpreferred;
+		if(!created
+				|| vkMapMemory(ctx.device, memories[i], 0, capacity, 0, &mapped[i]) != VK_SUCCESS
+				|| (!fastmemory && !isfirstarena)) {
+			if(created && !fastmemory && !isfirstarena) {
+				gLogw("gVKDraw") << "The mesh arena stays at " << ctx.mesharenacapacity
+						<< " bytes rather than growing to " << capacity
+						<< ": the memory the GPU reads at full speed has no room for the larger "
+						<< "one, and an arena the GPU reads across the bus costs more than the "
+						<< "draw calls the extra room would have saved.";
+			} else {
+				gLogw("gVKDraw") << "Could not grow the mesh arena to " << capacity
+						<< " bytes; keeping the " << ctx.mesharenacapacity << " byte one.";
+			}
 			for(int j = 0; j <= i; j++) {
 				if(mapped[j] != nullptr) vkUnmapMemory(ctx.device, memories[j]);
 				if(buffers[j] != VK_NULL_HANDLE) vkDestroyBuffer(ctx.device, buffers[j], nullptr);

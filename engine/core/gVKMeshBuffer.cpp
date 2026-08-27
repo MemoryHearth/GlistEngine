@@ -109,7 +109,17 @@ static bool gvkMakeMeshBufferDynamic(gVKContext& ctx, gVKMeshBuffer& buf,
 	// draws settles after one allocation instead of reallocating on each. Without it
 	// a gRectangle alternating between filled and outlined - four indices then five -
 	// rebuilt both its buffers twice a frame, and every rebuild drained the device.
-	const VkDeviceSize capacity = std::max<VkDeviceSize>(size + size / 2, 256);
+	//
+	// Capped, though, because these slots are the largest consumer of the one heap a
+	// discrete GPU is short of: memory it reads at full speed that the CPU can also
+	// write. There are GVK_MAX_FRAMES_IN_FLIGHT of them per mesh, so an uncapped half
+	// costs three times the mesh - on a skinned character of twenty thousand vertices
+	// that is four megabytes of a heap that holds 256. The buffers the headroom was
+	// written for are the small ones that change shape between draws, and they keep
+	// all of it; a megabyte of slack on a mesh whose vertex count never moves buys
+	// nothing at all.
+	const VkDeviceSize headroom = std::min<VkDeviceSize>(size / 2, 256u << 10);
+	const VkDeviceSize capacity = std::max<VkDeviceSize>(size + headroom, 256);
 	const VkBufferUsageFlags usage = isIndex ? VK_BUFFER_USAGE_INDEX_BUFFER_BIT
 			: VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 	for(int i = 0; i < GVK_MAX_FRAMES_IN_FLIGHT; i++) {

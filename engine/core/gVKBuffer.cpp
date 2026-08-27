@@ -41,10 +41,18 @@ uint32_t gvkFindMemoryType(gVKContext& ctx, uint32_t typeFilter, VkMemoryPropert
 	return 0;
 }
 
+// How much has been pushed out of the memory the GPU reads fastest because that
+// heap was full, counted for the log rather than reported per buffer. Not reset:
+// a run either spills or it does not, and the total over the run is the number
+// worth seeing.
+static VkDeviceSize gvkspilledbytes = 0;
+static uint32_t gvkspilledbuffers = 0;
+
 bool gvkCreateBuffer(gVKContext& ctx, VkDeviceSize size, VkBufferUsageFlags usage,
 		VkMemoryPropertyFlags properties, VkBuffer& outBuffer, VkDeviceMemory& outMemory,
-		VkMemoryPropertyFlags preferred) {
+		VkMemoryPropertyFlags preferred, bool* outGotPreferred) {
 	VkDevice device = *ctx.getDevice();
+	if(outGotPreferred != nullptr) *outGotPreferred = preferred == 0;
 
 	VkBufferCreateInfo bufferinfo{};
 	bufferinfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -70,9 +78,9 @@ bool gvkCreateBuffer(gVKContext& ctx, VkDeviceSize size, VkBufferUsageFlags usag
 	// it plainly cannot fit - not to answer on the driver's behalf, which is what
 	// refusing here on a heap size the driver itself reported would amount to.
 	if(required == UINT32_MAX) required = gvkTryFindMemoryType(ctx, memreq.memoryTypeBits, properties);
-	uint32_t memtype = UINT32_MAX;
-	if(preferred != 0) memtype = gvkTryFindMemoryType(ctx, memreq.memoryTypeBits, preferred, memreq.size);
-	if(memtype == UINT32_MAX) memtype = required;
+	uint32_t preferredtype = UINT32_MAX;
+	if(preferred != 0) preferredtype = gvkTryFindMemoryType(ctx, memreq.memoryTypeBits, preferred, memreq.size);
+	uint32_t memtype = preferredtype != UINT32_MAX ? preferredtype : required;
 	if(memtype == UINT32_MAX) {
 		gLoge("gVKBuffer") << "No memory type on this GPU can hold a " << memreq.size << " byte buffer.";
 		vkDestroyBuffer(device, outBuffer, nullptr);
@@ -99,11 +107,31 @@ bool gvkCreateBuffer(gVKContext& ctx, VkDeviceSize size, VkBufferUsageFlags usag
 	// object - the Vulkan backend quietly gives up the thing that made it faster than
 	// OpenGL, while still drawing the correct picture.
 	if(allocated != VK_SUCCESS && memtype != required && required != UINT32_MAX) {
-		gLogw("gVKBuffer") << "The preferred memory heap could not hold a " << memreq.size
-				<< " byte buffer, so it goes to memory the GPU reads across the bus. "
-				<< "On a discrete GPU this heap is 256 MB without resizable BAR.";
+		const VkDeviceSize before = gvkspilledbytes;
+		gvkspilledbytes += memreq.size;
+		gvkspilledbuffers++;
+		// The first spill, and then only when the total crosses the next threshold.
+		// A level that exhausts this heap does it while loading hundreds of meshes,
+		// and a line per mesh buries the log in the one situation where the log is
+		// all there is to go on - while a single line understates a scene that has
+		// put a hundred megabytes on the wrong side of the bus.
+		static const VkDeviceSize thresholds[] = {0, 16u << 20, 64u << 20, 256u << 20};
+		for(VkDeviceSize threshold : thresholds) {
+			if(before > threshold || gvkspilledbytes <= threshold) continue;
+			gLogw("gVKBuffer") << "Memory that is both on the GPU and writable by the CPU is full: "
+					<< gvkspilledbuffers << " buffer(s), " << (gvkspilledbytes >> 20)
+					<< " MB, now live in system RAM instead, which the GPU reads across the bus on "
+					<< "every draw of every pass. On a discrete GPU that heap is 256 MB unless "
+					<< "resizable BAR is turned on.";
+			break;
+		}
 		allocinfo.memoryTypeIndex = required;
+		memtype = required;
 		allocated = vkAllocateMemory(device, &allocinfo, nullptr, &outMemory);
+	}
+	if(outGotPreferred != nullptr) {
+		*outGotPreferred = preferred == 0
+				|| (allocated == VK_SUCCESS && memtype == preferredtype && preferredtype != UINT32_MAX);
 	}
 	if(allocated != VK_SUCCESS) {
 		gLoge("gVKBuffer") << "vkAllocateMemory failed for a " << memreq.size << " byte buffer.";
@@ -140,6 +168,39 @@ struct gVKUploadStaging {
 	VkBuffer buffer = VK_NULL_HANDLE;
 	VkDeviceMemory memory = VK_NULL_HANDLE;
 };
+
+
+void gvkLogMemoryHeaps(gVKContext& ctx) {
+	VkPhysicalDeviceMemoryProperties* memprops = ctx.getDeviceMemoryProperties();
+	if(memprops == nullptr) return;
+
+	// The one number that decides whether this backend behaves the way it does on
+	// the machines it was written on. Where the GPU shares the CPU's memory, the
+	// heap that is both device local and host visible is all of it, and every
+	// persistently mapped buffer here is free. Where it does not, that heap is a
+	// window into video memory - 256 MB on Windows without resizable BAR - and it is
+	// the scarcest resource the renderer has.
+	VkDeviceSize fastwritable = 0;
+	VkDeviceSize devicelocal = 0;
+	for(uint32_t i = 0; i < memprops->memoryTypeCount; i++) {
+		const VkMemoryPropertyFlags flags = memprops->memoryTypes[i].propertyFlags;
+		const VkDeviceSize heapsize = memprops->memoryHeaps[memprops->memoryTypes[i].heapIndex].size;
+		if((flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0) continue;
+		if(heapsize > devicelocal) devicelocal = heapsize;
+		if((flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) continue;
+		if(heapsize > fastwritable) fastwritable = heapsize;
+	}
+
+	const double tomb = 1.0 / (1024.0 * 1024.0);
+	// Treated as shared when the writable window is most of the device local memory,
+	// which is what a UMA device reports and what a discrete one never does.
+	const bool shared = fastwritable > 0 && fastwritable >= devicelocal - devicelocal / 8;
+	gLogi("gVKBuffer") << "Memory: " << (VkDeviceSize)(devicelocal * tomb) << " MB on the GPU, of which "
+			<< (VkDeviceSize)(fastwritable * tomb) << " MB is also writable by the CPU"
+			<< (shared ? " - the same memory, so mapped buffers cost nothing extra."
+					: ". Mapped buffers - animated meshes, the mesh arena, the 2D vertex ring - "
+					  "compete for that window, and what does not fit is read across the bus.");
+}
 
 struct gVKUploadBatch {
 	VkCommandBuffer cmd = VK_NULL_HANDLE;

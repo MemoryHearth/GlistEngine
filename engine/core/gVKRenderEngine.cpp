@@ -2265,6 +2265,11 @@ bool gVKRenderEngine::initVulkan() {
 	vkGetPhysicalDeviceProperties(ctx->physicaldevice, &ctx->deviceproperties);
 	vkGetPhysicalDeviceFeatures(ctx->physicaldevice, &ctx->devicefeatures);
 	vkGetPhysicalDeviceMemoryProperties(ctx->physicaldevice, &ctx->devicememoryproperties);
+	// Printed as soon as they are known. What separates a machine this backend is
+	// fast on from one it is not is almost entirely in these two numbers, and they
+	// are the part of a performance report from a machine we do not have that cannot
+	// be reconstructed afterwards.
+	gvkLogMemoryHeaps(*ctx);
 
 	// Surface capabilities, formats and present modes for the selected device -
 	// the inputs the swapchain phase consumes. The surface and device both exist
